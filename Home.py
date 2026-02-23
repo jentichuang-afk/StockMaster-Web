@@ -1,4 +1,3 @@
-import os
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -10,23 +9,20 @@ from google import genai
 st.set_page_config(page_title="AI 戰情雷達 (雲端永久版)", layout="wide")
 
 st.title("🚀 AI 戰情雷達 - 雲端永久版")
-st.markdown("股票代碼清單將自動保存在本機檔案中，每次開啟皆會保留您最後的設定！")
+st.markdown("由於雲端伺服器沒有硬碟儲存空間，請利用**網址參數**來存檔清單，修改後只要將**網址存成書籤**即可永久保存！")
 
-# --- 核心功能：從本機檔案讀取與寫入清單 ---
-TICKERS_FILE = "tickers.txt"
-DEFAULT_TICKERS = "2330, 2317, 3034, 2376, 2383, 2027, 0050"
+# --- 核心功能：從網址讀取寫入清單 (雲端最穩定存檔方式) ---
+def get_tickers_from_url():
+    """從網址參數讀取清單，如果沒有則使用預設值"""
+    # Streamlit 新版 query_params 用法
+    params = st.query_params
+    if "tickers" in params:
+        return params["tickers"]
+    return "2330, 2317, 3034, 2376, 2383, 2027, 0050"
 
-def get_saved_tickers():
-    """從檔案讀取清單，如果沒有則使用預設值"""
-    if os.path.exists(TICKERS_FILE):
-        with open(TICKERS_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return DEFAULT_TICKERS
-
-def save_tickers(tickers):
-    """儲存清單到檔案"""
-    with open(TICKERS_FILE, "w", encoding="utf-8") as f:
-        f.write(tickers)
+def update_url_tickers(new_tickers):
+    """更新網址參數"""
+    st.query_params["tickers"] = new_tickers
 
 # --- 側邊欄：設定 ---
 st.sidebar.header("⚙️ 核心設定")
@@ -42,23 +38,23 @@ model_map = {
 selected_label = st.sidebar.selectbox("選擇分析大腦", list(model_map.keys()), index=0)
 model_name = model_map[selected_label]
 
-# 2. 觀察清單 (自動存檔)
-st.sidebar.subheader("📋 觀察清單")
+# 2. 觀察清單 (改用網址記憶)
+st.sidebar.subheader("📋 觀察清單 (網址記憶)")
 
-# A. 讀取目前的清單
-current_tickers = get_saved_tickers()
+# A. 讀取目前的清單 (從網址)
+current_tickers = get_tickers_from_url()
 
 # B. 顯示輸入框
 user_input = st.sidebar.text_area(
     "輸入代號 (修改後請點擊外側空白處)", 
     value=current_tickers, 
     height=150,
-    help="在這裡自由新增或刪除股票代碼，系統會自動寫入檔案保存，下次打開依然存在！"
+    help="修改此處內容後，網頁最上方網址列會自動把名單加在後面。請將【更新後的網址加入書籤】，下次點開書籤清單就在！"
 )
 
-# C. 如果使用者修改了清單，自動存檔
+# C. 如果使用者修改了清單，更新網址
 if user_input != current_tickers:
-    save_tickers(user_input)
+    update_url_tickers(user_input)
     # 強制重新執行以更新畫面
     st.rerun()
 
