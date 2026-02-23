@@ -46,9 +46,11 @@ model_map = {
     "⚡ 穩定極速版 (Gemini 2.5 Flash)": "gemini-2.5-flash",
     "🧠 最新深度版 (Gemini 2.5 Pro)": "gemini-2.5-pro",
     "⚡ 穩定極速版 (Gemini 2.0 Flash)": "gemini-2.0-flash",
+    "🎁 驚喜自動升級版 (gemini-flash-latest)": "gemini-flash-latest",
 }
 selected_label = st.sidebar.selectbox("選擇分析大腦", list(model_map.keys()), index=0)
 model_name = model_map[selected_label]
+st.session_state['selected_gemini_model'] = model_name
 
 # 2. 觀察清單 (改用網址記憶)
 st.sidebar.subheader("📋 觀察清單 (網址記憶)")

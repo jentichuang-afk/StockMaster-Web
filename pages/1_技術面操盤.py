@@ -141,9 +141,12 @@ def call_ai(model_type, prompt):
                  return "API Key 未設定 (請在 secrets.toml 填寫有效的 GEMINI_API_KEY)"
             
             client = genai.Client(api_key=gemini_key)
-            # Utilizing the recommended gemini-3-flash-preview model
+            
+            # 從 session_state 抓取使用者首頁選取的模型，如果沒有則用預設值
+            selected_model = st.session_state.get('selected_gemini_model', 'gemini-3-flash-preview')
+            
             response = client.models.generate_content(
-                model='gemini-3-flash-preview',
+                model=selected_model,
                 contents=prompt,
             )
             return response.text
