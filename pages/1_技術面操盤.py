@@ -21,14 +21,19 @@ st.sidebar.header("⚙️ 參數設定")
 
 # 處理跨頁面連動邏輯
 auto_run = False
-default_ticker = "2027"
+
+# 初始化儲存輸入框狀態的 key
+if 'ticker_input_key' not in st.session_state:
+    st.session_state['ticker_input_key'] = "2027"
+
+# 如果從首頁點擊過來，強制更新 key
 if 'auto_analyze_ticker' in st.session_state and st.session_state['auto_analyze_ticker'] is not None:
-    default_ticker = st.session_state['auto_analyze_ticker']
+    st.session_state['ticker_input_key'] = st.session_state['auto_analyze_ticker']
     auto_run = True
     # 讀取後馬上清除，避免下次進入頁面又重複觸發
     st.session_state['auto_analyze_ticker'] = None
 
-ticker_input = st.sidebar.text_input("輸入股票代碼", value=default_ticker, help="台股請輸入如 2330, 8155")
+ticker_input = st.sidebar.text_input("輸入股票代碼", key="ticker_input_key", help="台股請輸入如 2330, 8155")
 days_input = st.sidebar.slider("K線觀察天數", 60, 730, 180)
 
 if st.sidebar.button("🔄 刷新圖表"):
@@ -164,7 +169,10 @@ def call_ai(model_type, prompt):
     return "未知的模型類型"
 
 # --- 6. 主程式 ---
-if run_btn and ticker_input:
+if run_btn or auto_run:
+    st.session_state['show_analysis_page'] = True
+
+if st.session_state.get('show_analysis_page', False) and ticker_input:
     raw_ticker = ticker_input.strip().upper()
     
     final_symbol = raw_ticker
@@ -197,7 +205,7 @@ if run_btn and ticker_input:
         c3.metric("MA20 (月線)", f"{last['MA20']:.2f}")
         c4.metric("MA60 (季線)", f"{last['MA60']:.2f}") # 這裡有顯示，代表有算出來
 
-        tab1, tab2 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議", "🏛️ 基本面分析", "📰 市場情緒分析"])
         
         with tab1:
             rows = 2
@@ -257,3 +265,158 @@ if run_btn and ticker_input:
                         st.error(result)
                     else:
                         st.warning(result)
+                        
+        with tab3:
+            st.markdown(f"### 🏛️ {final_symbol} 基本面與產業分析")
+            st.markdown("利用 AI 結合常識與最新市場洞察，深入剖析該公司的基本面體質。")
+            
+            if st.button("啟動基本面分析深潛 (Deep Dive)"):
+                with st.spinner("AI 正在調閱該公司的產業定位、護城河與財務特徵..."):
+                    
+                    # 嘗試抓取基本的公司資訊給 AI 參考 (非必須，但能提升回答品質)
+                    stock_info = {}
+                    try:
+                        ticker_obj = yf.Ticker(final_symbol)
+                        info = ticker_obj.info
+                        stock_info['名稱'] = info.get('shortName', '未知')
+                        stock_info['產業'] = info.get('industry', '未知')
+                        stock_info['市值'] = info.get('marketCap', '未知')
+                        stock_info['本益比(PE)'] = info.get('trailingPE', '未知')
+                        stock_info['股東權益報酬率(ROE)'] = info.get('returnOnEquity', '未知')
+                    except:
+                        pass
+                    
+                    bg_info = f"參考數據：名稱={stock_info.get('名稱')}, 產業={stock_info.get('產業')}, 本益比={stock_info.get('本益比(PE)')}, ROE={stock_info.get('股東權益報酬率(ROE)')}" if stock_info else "無額外參考數據"
+                    
+                    fundamental_prompt = f"""
+                    你現在是一位頂尖的「基本面分析師 (Fundamental Analyst)」與「產業研究員」。
+                    
+                    分析標的：{final_symbol}
+                    目前已知背景資訊：{bg_info}
+                    現在時間：{datetime.now().strftime("%Y-%m-%d")}
+                    
+                    請利用你龐大的資料庫與對全球產業鏈的理解，針對這家公司撰寫一份深入且專業的基本面分析報告。
+                    
+                    報告請嚴格依循以下架構撰寫，並使用繁體中文，語氣需專業、客觀且具備洞察力：
+                    
+                    ### 🏢 1. 公司介紹與核心業務 (Business Model)
+                       - 這家公司主要靠什麼賺錢？
+                       - 它在產業鏈(上下游)中扮演什麼角色？
+                    
+                    ### 🏰 2. 產業護城河 (Economic Moat)
+                       - 它擁有什麼樣的競爭優勢？(例如：規模經濟、專利技術、轉換成本、品牌效應或特許經營權)
+                       - 競爭對手是誰？它憑什麼贏過對手？
+                    
+                    ### 🚀 3. 未來成長動能與催化劑 (Growth Catalysts)
+                       - 短中期內，有什麼關鍵趨勢、新產品或市場題材能推動它的營收或獲利成長？(例如 AI 趨勢、政策利多等)
+                    
+                    ### ⚠️ 4. 潛在風險與逆風 (Risks)
+                       - 投資這家公司需要留意什麼致命傷或總經風險？(例如：匯率、原物料價格、地緣政治、競爭加劇)
+                    
+                    ### 💡 5. 總結與長線投資價值定調
+                       - 總結這家公司的體質。
+                       - 給予一句話的長線投資人建議 (例如：「適合防禦型存股族」、「適合承擔高風險追求成長的投資人」等)。
+                    """
+                    
+                    result_gemini = call_ai('gemini', fundamental_prompt)
+                    st.session_state[f"fundamental_result_gemini_{final_symbol}"] = result_gemini
+                    
+                    result_groq = call_ai('groq', fundamental_prompt)
+                    st.session_state[f"fundamental_result_groq_{final_symbol}"] = result_groq
+
+            # 顯示分析結果 (如果是之前已經分析過的，也會顯示出來)
+            if f"fundamental_result_gemini_{final_symbol}" in st.session_state and f"fundamental_result_groq_{final_symbol}" in st.session_state:
+                res_gemini = st.session_state[f"fundamental_result_gemini_{final_symbol}"]
+                res_groq = st.session_state[f"fundamental_result_groq_{final_symbol}"]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### 🔵 Gemini 基本面報告")
+                    if "未設定" in res_gemini or "錯誤" in res_gemini:
+                        st.error(res_gemini)
+                    else:
+                        st.info(res_gemini)
+                
+                with col2:
+                    st.markdown("### 🟠 Llama 3 基本面報告")
+                    if "未設定" in res_groq or "錯誤" in res_groq:
+                        st.error(res_groq)
+                    else:
+                        st.warning(res_groq)
+
+        with tab4:
+            st.markdown(f"### 📰 {final_symbol} 市場情緒分析")
+            st.markdown("分析近期市場新聞、論壇風向與機構觀點，抓出市場對這家公司的真實看法與情緒溫度。")
+            
+            if st.button("啟動市場情緒雷達 (Sentiment Scanner)"):
+                with st.spinner("AI 正在掃描全網新聞標題與市場輿論風向..."):
+                    
+                    # 嘗試抓取近期的 Yahoo 財經新聞
+                    news_text = ""
+                    try:
+                        ticker_obj = yf.Ticker(final_symbol)
+                        news_list = ticker_obj.news
+                        if news_list:
+                            # 提取最多 5 則新聞標題作為市場情緒參考
+                            news_titles = [f"- {item['title']}" for item in news_list[:5] if 'title' in item]
+                            news_text = "\n".join(news_titles)
+                    except:
+                        pass
+                    
+                    sentiment_info = f"【近期盤面對應新聞與焦點】：\n{news_text}" if news_text else "查無近期特定新聞，請透過 AI 本身對這家公司近期話題的知識進行分析。"
+                    
+                    sentiment_prompt = f"""
+                    你現在是一位敏銳的「市場情緒分析師 (Sentiment Analyst)」與「行為金融學專家」。
+                    
+                    分析標的：{final_symbol}
+                    現在時間：{datetime.now().strftime("%Y-%m-%d")}
+                    
+                    以下是近期市場上關於這家公司的最新新聞標題或是近期焦點：
+                    {sentiment_info}
+                    
+                    請利用這些資訊，並結合你對總體經濟、近期科技趨勢與投資人心理的理解，分析市場目前對這家公司的「真實情緒」與「預期心理」。
+                    
+                    報告請嚴格依循以下架構撰寫，並使用繁體中文，語氣需具備市場敏銳度、客觀且一針見血：
+                    
+                    ### 🌡️ 1. 整體市場情緒溫度表 (Sentiment Gauge)
+                       - 極度狂熱 / 偏向樂觀 / 中立觀望 / 偏向悲觀 / 極度恐慌？請給出一個明確的定調。
+                       - 市場目前對這家公司最大的「期待」和「恐懼」分別是什麼？
+                    
+                    ### 🗣️ 2. 大眾與散戶的真實風向 (Retail Perspective)
+                       - 近期散戶在討論什麼？(例如：股息該不該領、利多出盡、還是買不到好焦慮？)
+                       - 散戶目前是正在瘋狂追價，還是急著停損解套？
+                    
+                    ### 🏦 3. 法人機構與聰明錢的動向預測 (Smart Money View)
+                       - 法人通常用什麼角度看這家公司近期的題材？(例如：認為新聞是短期炒作，還是長線實質利多？)
+                       - 外資或主力近期可能正在做什麼佈局(請合乎常理與現況推測)？
+                    
+                    ### ⚖️ 4. 逆思考與潛在反轉點 (Contrarian View)
+                       - 人多的地方不要去。根據目前的極端情緒（如果有的話），是不是有超跌錯殺，或者是股價透支未來的狀況？
+                       - 你會給現在想「進場」或「出場」的投資人什麼反直覺的逆勢操作警告？
+                    """
+                    
+                    res_sent_gemini = call_ai('gemini', sentiment_prompt)
+                    st.session_state[f"sentiment_result_gemini_{final_symbol}"] = res_sent_gemini
+                    
+                    res_sent_groq = call_ai('groq', sentiment_prompt)
+                    st.session_state[f"sentiment_result_groq_{final_symbol}"] = res_sent_groq
+
+            # 顯示分析結果
+            if f"sentiment_result_gemini_{final_symbol}" in st.session_state and f"sentiment_result_groq_{final_symbol}" in st.session_state:
+                sent_gemini = st.session_state[f"sentiment_result_gemini_{final_symbol}"]
+                sent_groq = st.session_state[f"sentiment_result_groq_{final_symbol}"]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### 🔵 Gemini 情緒解析")
+                    if "未設定" in sent_gemini or "錯誤" in sent_gemini:
+                        st.error(sent_gemini)
+                    else:
+                        st.info(sent_gemini)
+                
+                with col2:
+                    st.markdown("### 🟠 Llama 3 情緒解析")
+                    if "未設定" in sent_groq or "錯誤" in sent_groq:
+                        st.error(sent_groq)
+                    else:
+                        st.warning(sent_groq)
