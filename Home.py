@@ -13,15 +13,27 @@ st.markdown("由於雲端伺服器沒有硬碟儲存空間，請利用**網址�
 
 # --- 核心功能：從網址讀取寫入清單 (雲端最穩定存檔方式) ---
 def get_tickers_from_url():
-    """從網址參數讀取清單，如果沒有則使用預設值"""
+    """從網址參數讀取清單，並結合 session_state 避免跨分頁遺失"""
     # Streamlit 新版 query_params 用法
     params = st.query_params
+    
+    # 1. 優先從網址讀取 (例如使用者剛點開書籤或剛更新)
     if "tickers" in params:
+        st.session_state["tickers"] = params["tickers"]
         return params["tickers"]
+        
+    # 2. 若網址無參數，但 session_state 有，代表是從其他分頁切換回來
+    if "tickers" in st.session_state:
+        # 將 session_state 的清單寫回網址，維持書籤功能
+        st.query_params["tickers"] = st.session_state["tickers"]
+        return st.session_state["tickers"]
+        
+    # 3. 如果都沒有，返回預設值
     return "2330, 2317, 3034, 2376, 2383, 2027, 0050"
 
 def update_url_tickers(new_tickers):
-    """更新網址參數"""
+    """更新網址參數與 session_state"""
+    st.session_state["tickers"] = new_tickers
     st.query_params["tickers"] = new_tickers
 
 # --- 側邊欄：設定 ---
