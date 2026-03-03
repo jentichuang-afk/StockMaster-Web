@@ -184,7 +184,7 @@ def get_stock_data(tickers):
 if user_input:
     result_df = get_stock_data(user_input)
     if not result_df.empty:
-        st.markdown("💡 **提示：直接點擊下方表格中的任意一列，即可自動跳轉到「技術面操盤」進行深入分析！**")
+        st.markdown("💡 **提示：直接點擊下方表格中的任意一列，即可自動跳轉到「個股深度解析」進行深入分析！**")
         
         # 使用 Streamlit 內建選擇功能 (不支援 Pandas Styler，故移除自訂顏色)
         event = st.dataframe(
@@ -199,9 +199,9 @@ if user_input:
         if len(event.selection.rows) > 0:
             selected_idx = event.selection.rows[0]
             selected_code = result_df.iloc[selected_idx]['代號']
-            # 將代號存入 session_state，讓技術分析頁面自動讀取並執行
+            # 將代號存入 session_state，讓個股分析頁面自動讀取並執行
             st.session_state['auto_analyze_ticker'] = str(selected_code)
-            st.switch_page("pages/1_技術面操盤.py")
+            st.switch_page("pages/1_個股深度解析.py")
         
         st.divider()
         st.subheader("🤖 Gemini 戰情室")

@@ -228,7 +228,7 @@ if 'df_buy_v2' in st.session_state:
                 if st.button("🚀 執行 AI 深度分析", key="btn_buy"):
                     ticker = selected_stock.split(" - ")[0]
                     st.session_state['auto_analyze_ticker'] = ticker
-                    st.switch_page("pages/1_技術面操盤.py")
+                    st.switch_page("pages/1_個股深度解析.py")
         else:
             st.info("目前沒有股票符合「長多回檔 (RSI<40)」的條件。")
 
@@ -254,6 +254,6 @@ if 'df_buy_v2' in st.session_state:
                 if st.button("🚀 執行 AI 深度分析", key="btn_sell"):
                     ticker = selected_stock.split(" - ")[0]
                     st.session_state['auto_analyze_ticker'] = ticker
-                    st.switch_page("pages/1_技術面操盤.py")
+                    st.switch_page("pages/1_個股深度解析.py")
         else:
             st.info("目前沒有股票 RSI > 70。")
