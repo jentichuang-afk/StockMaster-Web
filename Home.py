@@ -1,9 +1,11 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from google import genai
+from datetime import datetime, timedelta
 
 # --- 設定頁面配置 ---
 st.set_page_config(page_title="AI 戰情雷達 (雲端永久版)", layout="wide")
@@ -154,13 +156,17 @@ def get_stock_data(tickers):
         symbol = f"{code}.TW"
         
         try:
-            df = yf.download(symbol, period="6mo", progress=False)
+            # yf.download 不支援 period="6mo"，改用明確的 start / end
+            end_date = datetime.now() + timedelta(days=1)
+            start_date = end_date - timedelta(days=180)
+            
+            df = yf.download(symbol, start=start_date, end=end_date, progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
                 
             if df.empty or len(df) < 20: 
                 symbol = f"{code}.TWO"
-                df = yf.download(symbol, period="6mo", progress=False)
+                df = yf.download(symbol, start=start_date, end=end_date, progress=False)
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
         except Exception as e:
