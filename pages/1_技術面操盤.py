@@ -208,6 +208,108 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
         c3.metric("MA20 (月線)", f"{last['MA20']:.2f}")
         c4.metric("MA60 (季線)", f"{last['MA60']:.2f}") # 這裡有顯示，代表有算出來
 
+        st.markdown("""---""")
+        mega_btn = st.button("🌟 一鍵啟動四大 AI 分析 (節省 API 額度與時間)", type="primary", use_container_width=True)
+        if mega_btn:
+            with st.spinner("🚀 AI 正在彙整所有數據並全面解析，請稍候... (約需 15-30 秒)"):
+                import re
+                
+                target_cols = ['Close', 'MA5', 'MA20', 'MA60', 'K', 'D', 'MACD', 'MACD_Hist', 'OBV']
+                tech_data_str = df.tail(5)[target_cols].to_string()
+                
+                fin_data = {}
+                stock_info = {}
+                news_text = ""
+                try:
+                    ticker_obj = yf.Ticker(final_symbol)
+                    info = ticker_obj.info
+                    stock_info['名稱'] = info.get('shortName', '未知')
+                    stock_info['產業'] = info.get('industry', '未知')
+                    
+                    fin_data['本益比(PE)'] = info.get('trailingPE', '未知')
+                    fin_data['預估本益比(F-PE)'] = info.get('forwardPE', '未知')
+                    fin_data['股價淨值比(PB)'] = info.get('priceToBook', '未知')
+                    fin_data['ROE'] = info.get('returnOnEquity', '未知')
+                    fin_data['營收 YoY'] = info.get('revenueGrowth', '未知')
+                    fin_data['毛利率'] = info.get('grossMargins', '未知')
+                    fin_data['營業利益率'] = info.get('operatingMargins', '未知')
+                    fin_data['負債權益比'] = info.get('debtToEquity', '未知')
+                    fin_data['自由現金流'] = info.get('freeCashflow', '未知')
+                    
+                    news_list = ticker_obj.news
+                    if news_list:
+                        news_text = "\n".join([f"- {item['title']}" for item in news_list[:5] if 'title' in item])
+                except:
+                    pass
+                
+                debate_bg = "\n".join([f"- {k}: {v}" for k, v in fin_data.items() if v != '未知'])
+                if not debate_bg: debate_bg = "無法獲取最新財務數據。"
+                sentiment_info = f"新聞與焦點：\n{news_text}" if news_text else "查無近期特定新聞。"
+
+                mega_prompt = f"""
+                你現在是一組頂尖的「華爾街全方位 AI 投研團隊」。
+                我們正在分析標的：{final_symbol} (名稱: {stock_info.get('名稱')}, 產業: {stock_info.get('產業')})
+                現在時間：{datetime.now().strftime("%Y-%m-%d")}
+                現價：{last['Close']:.2f}
+                
+                【提供的情報】
+                [1. 近期技術面數據]
+                {tech_data_str}
+                
+                [2. 基本與財務核心數據]
+                {debate_bg}
+                
+                [3. 近期新聞與市場焦點]
+                {sentiment_info}
+                
+                【🌟 最高任務指令與格式要求 🌟】
+                請你根據上述所有的情報，同時產出四份獨立的專業分析報告。
+                你「必須」嚴格輸出以下四個 XML 標籤區塊，並將對應的報告內容寫在其內。絕對不能遺漏任何一個標籤。
+
+                <technical_analysis>
+                (分析任務：根據技術數據判斷趨勢、指標訊號(如MACD, KD)、乖離率，給出明確的操作指導與支撐壓力理由)
+                </technical_analysis>
+
+                <fundamental_analysis>
+                (分析任務：根據核心業務、競爭對手與護城河、未來催化劑、潛在總經風險，對這家公司的長線價值進行深度定調)
+                </fundamental_analysis>
+
+                <sentiment_analysis>
+                (分析任務：根據新聞與市場預期，分析散戶風向、聰明錢/法人的可能動向，給出目前的極端情緒溫度定調與反直覺的警告)
+                </sentiment_analysis>
+
+                <ai_debate>
+                (分析任務：舉辦投資委員會多空激辯。同時扮演「火箭老哥🚀(樂觀)」、「巴菲特信徒👴(看重估值)」、「放空大王🐻(挑剔財報弱點)」、「投資總監👨‍⚖️(結語裁決)」。每人至少發言1到2次。
+                ⚠️ 特別規定：辯論時他們彼此互相攻擊的論點「必須具體引用數字」，例如我在上方提供的【財務核心數據】或【技術價格】，不能只說空話！)
+                </ai_debate>
+                
+                (請確保每個 XML 標籤都有正確閉合，以利程式系統解析。並且全程使用繁體中文)
+                """
+
+                def parse_mega(text):
+                    res = {}
+                    for tag in ['technical_analysis', 'fundamental_analysis', 'sentiment_analysis', 'ai_debate']:
+                        m = re.search(f'<{tag}>(.*?)</{tag}>', text, re.DOTALL | re.IGNORECASE)
+                        content = m.group(1).strip() if m else f"⚠️ 解析失敗，AI 回覆可能被截斷或未按 XML 格式輸出此區塊。\n\n原始回應預覽：{text[:200]}..."
+                        res[tag] = content
+                    return res
+                
+                mega_gemini = call_ai('gemini', mega_prompt)
+                parsed_gemini = parse_mega(mega_gemini)
+                st.session_state[f"tech_result_gemini_{final_symbol}"] = parsed_gemini['technical_analysis']
+                st.session_state[f"fundamental_result_gemini_{final_symbol}"] = parsed_gemini['fundamental_analysis']
+                st.session_state[f"sentiment_result_gemini_{final_symbol}"] = parsed_gemini['sentiment_analysis']
+                st.session_state[f"debate_result_gemini_{final_symbol}"] = parsed_gemini['ai_debate']
+
+                mega_groq = call_ai('groq', mega_prompt)
+                parsed_groq = parse_mega(mega_groq)
+                st.session_state[f"tech_result_groq_{final_symbol}"] = parsed_groq['technical_analysis']
+                st.session_state[f"fundamental_result_groq_{final_symbol}"] = parsed_groq['fundamental_analysis']
+                st.session_state[f"sentiment_result_groq_{final_symbol}"] = parsed_groq['sentiment_analysis']
+                st.session_state[f"debate_result_groq_{final_symbol}"] = parsed_groq['ai_debate']
+                
+                st.success("✅ 四大分析報告已全面生成完畢！請直接點擊下方各分頁查看結果。")
+
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議", "🏛️ 基本面分析", "📰 市場情緒分析", "🗣️ AI 多空辯論"])
         
         with tab1:
@@ -244,30 +346,35 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
-            # 🛠️ 關鍵修正：將 'MA60' 加入到要傳給 AI 的字串中
-            target_cols = ['Close', 'MA5', 'MA20', 'MA60', 'K', 'D', 'MACD', 'MACD_Hist', 'OBV']
-            tech_data_str = df.tail(5)[target_cols].to_string()
+            st.markdown("### 🤖 AI 技術面操作建議")
+            if st.button("單獨啟動技術面分析 (Technical AI)"):
+                with st.spinner("AI 正在針對技術面與量價結構進行單獨解析..."):
+                    target_cols = ['Close', 'MA5', 'MA20', 'MA60', 'K', 'D', 'MACD', 'MACD_Hist', 'OBV']
+                    tech_data_str = df.tail(5)[target_cols].to_string()
+                    
+                    prompt = get_prompt(final_symbol, last['Close'], tech_data_str)
+                    
+                    st.session_state[f"tech_result_gemini_{final_symbol}"] = call_ai('gemini', prompt)
+                    st.session_state[f"tech_result_groq_{final_symbol}"] = call_ai('groq', prompt)
             
-            prompt = get_prompt(final_symbol, last['Close'], tech_data_str)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### 🔵 Gemini")
-                with st.spinner("Gemini 思考中..."):
-                    result = call_ai('gemini', prompt)
-                    if "未設定" in result or "錯誤" in result:
-                        st.error(result)
+            if f"tech_result_gemini_{final_symbol}" in st.session_state and f"tech_result_groq_{final_symbol}" in st.session_state:
+                res_gemini = st.session_state[f"tech_result_gemini_{final_symbol}"]
+                res_groq = st.session_state[f"tech_result_groq_{final_symbol}"]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### 🔵 Gemini 操盤建議")
+                    if "未設定" in res_gemini or "錯誤" in res_gemini:
+                        st.error(res_gemini)
                     else:
-                        st.info(result)
-            
-            with col2:
-                st.markdown("### 🟠 Llama 3")
-                with st.spinner("Llama 思考中..."):
-                    result = call_ai('groq', prompt)
-                    if "未設定" in result or "錯誤" in result:
-                        st.error(result)
+                        st.info(res_gemini)
+                
+                with col2:
+                    st.markdown("### 🟠 Llama 3 操盤建議")
+                    if "未設定" in res_groq or "錯誤" in res_groq:
+                        st.error(res_groq)
                     else:
-                        st.warning(result)
+                        st.warning(res_groq)
                         
         with tab3:
             st.markdown(f"### 🏛️ {final_symbol} 基本面與產業分析")
