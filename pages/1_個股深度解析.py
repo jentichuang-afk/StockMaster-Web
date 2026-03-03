@@ -7,6 +7,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from google import genai
 from groq import Groq
+import requests
+from bs4 import BeautifulSoup
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="股票大師：個股深度解析", layout="wide", page_icon="🔍")
@@ -67,6 +69,20 @@ def get_stock_data(symbol, days):
         if df.empty: return None
         return df
     except: return None
+
+# --- 3.1. 輔助功能：爬取真實中文公司名稱 (防 AI 幻覺) ---
+@st.cache_data(ttl=86400)
+def get_stock_name_from_web(code):
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=3)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            title = soup.title.string
+            if title: return title.split('(')[0].strip()
+    except: pass
+    return f"代號 {code}"
 
 # --- 4. 技術指標計算 ---
 def add_indicators(df):
@@ -223,7 +239,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 try:
                     ticker_obj = yf.Ticker(final_symbol)
                     info = ticker_obj.info
-                    stock_info['名稱'] = info.get('shortName', '未知')
+                    stock_info['名稱'] = get_stock_name_from_web(raw_ticker)
                     stock_info['產業'] = info.get('industry', '未知')
                     
                     fin_data['本益比(PE)'] = info.get('trailingPE', '未知')
@@ -248,10 +264,12 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
 
                 mega_prompt = f"""
                 你現在是一組頂尖的「華爾街全方位 AI 投研團隊」。
-                我們正在分析標的：{final_symbol} (名稱: {stock_info.get('名稱')}, 產業: {stock_info.get('產業')})
+                我們正在分析標的：{final_symbol} (真實公司名稱: {stock_info.get('名稱')}, 產業: {stock_info.get('產業')})
                 現在時間：{datetime.now().strftime("%Y-%m-%d")}
                 現價：{last['Close']:.2f}
                 
+                ⚠️【絕對防幻覺指令】⚠️：本公司的絕對真實名稱為「{stock_info.get('名稱')}」，請嚴格以此名稱展開所有分析，絕對禁止你根據股票代號去猜測其他不相干的公司（例如絕對不能把 4573 錯認為萬潤，它就是高明鐵）！所有的產業地位、護城河與新聞情緒，都必須 100% 針對「{stock_info.get('名稱')}」這家公司來評估！
+
                 【提供的情報】
                 [1. 近期技術面數據]
                 {tech_data_str}
@@ -388,7 +406,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     try:
                         ticker_obj = yf.Ticker(final_symbol)
                         info = ticker_obj.info
-                        stock_info['名稱'] = info.get('shortName', '未知')
+                        stock_info['名稱'] = get_stock_name_from_web(raw_ticker)
                         stock_info['產業'] = info.get('industry', '未知')
                         stock_info['市值'] = info.get('marketCap', '未知')
                         stock_info['本益比(PE)'] = info.get('trailingPE', '未知')
@@ -402,10 +420,11 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     你現在是一位頂尖的「基本面分析師 (Fundamental Analyst)」與「產業研究員」。
                     
                     分析標的：{final_symbol}
+                    ⚠️【絕對防幻覺指令】⚠️：本公司的絕對真實名稱為「{stock_info.get('名稱')}」，這是鐵錚錚的事實。分析時必須全程針對「{stock_info.get('名稱')}」展開，嚴禁你因為代號而去猜測、硬套到其他公司名稱上！任何張冠李戴的行為都將視為嚴重失職。
                     目前已知背景資訊：{bg_info}
                     現在時間：{datetime.now().strftime("%Y-%m-%d")}
                     
-                    請利用你龐大的資料庫與對全球產業鏈的理解，針對這家公司撰寫一份深入且專業的基本面分析報告。
+                    請利用你龐大的資料庫與對全球產業鏈的理解，針對「{stock_info.get('名稱')}」這家公司撰寫一份深入且專業的基本面分析報告。
                     
                     報告請嚴格依循以下架構撰寫，並使用繁體中文，語氣需專業、客觀且具備洞察力：
                     
