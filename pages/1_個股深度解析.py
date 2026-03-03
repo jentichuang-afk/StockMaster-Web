@@ -234,12 +234,11 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 tech_data_str = df.tail(5)[target_cols].to_string()
                 
                 fin_data = {}
-                stock_info = {}
+                stock_info = {'名稱': get_stock_name_from_web(raw_ticker), '產業': '未知'}
                 news_text = ""
                 try:
                     ticker_obj = yf.Ticker(final_symbol)
                     info = ticker_obj.info
-                    stock_info['名稱'] = get_stock_name_from_web(raw_ticker)
                     stock_info['產業'] = info.get('industry', '未知')
                     
                     fin_data['本益比(PE)'] = info.get('trailingPE', '未知')
@@ -402,11 +401,10 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 with st.spinner("AI 正在調閱該公司的產業定位、護城河與財務特徵..."):
                     
                     # 嘗試抓取基本的公司資訊給 AI 參考 (非必須，但能提升回答品質)
-                    stock_info = {}
+                    stock_info = {'名稱': get_stock_name_from_web(raw_ticker), '產業': '未知', '市值': '未知'}
                     try:
                         ticker_obj = yf.Ticker(final_symbol)
                         info = ticker_obj.info
-                        stock_info['名稱'] = get_stock_name_from_web(raw_ticker)
                         stock_info['產業'] = info.get('industry', '未知')
                         stock_info['市值'] = info.get('marketCap', '未知')
                         stock_info['本益比(PE)'] = info.get('trailingPE', '未知')
