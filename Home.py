@@ -152,12 +152,22 @@ def get_stock_data(tickers):
     for i, code in enumerate(ticker_list):
         name = get_stock_name_from_web(code)
         symbol = f"{code}.TW"
-        stock = yf.Ticker(symbol)
-        df = stock.history(period="6mo")
-        if len(df) < 20: 
-            symbol = f"{code}.TWO"; stock = yf.Ticker(symbol); df = stock.history(period="6mo")
         
-        if len(df) > 30:
+        try:
+            df = yf.download(symbol, period="6mo", progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+                
+            if df.empty or len(df) < 20: 
+                symbol = f"{code}.TWO"
+                df = yf.download(symbol, period="6mo", progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+        except Exception as e:
+            st.warning(f"⚠️ 獲取 {code} 數據時遭遇連線限制，將暫時跳過。")
+            continue
+        
+        if not df.empty and len(df) > 30:
             df = calculate_technical_indicators(df)
             last = df.iloc[-1]; prev = df.iloc[-2]
             price = last['Close']
