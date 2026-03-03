@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.env/
+.venv/
+
+# Streamlit secrets (NEVER COMMIT THIS)
+.streamlit/secrets.toml
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific data
+tickers.txt
