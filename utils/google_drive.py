@@ -21,7 +21,10 @@ SCOPES = [
 ]
 
 WATCHLIST_FILENAME = "stock_master_watchlist.txt"
-REDIRECT_URI = "http://localhost:8501"
+
+def _get_redirect_uri():
+    """優先從 secrets 讀取，若無則預設為 localhost"""
+    return st.secrets.get("REDIRECT_URI", "http://localhost:8501")
 
 
 def _get_client_config():
@@ -36,7 +39,7 @@ def _get_client_config():
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [REDIRECT_URI],
+            "redirect_uris": [_get_redirect_uri()],
         }
     }
 
@@ -81,7 +84,7 @@ def get_google_auth_url():
     flow = Flow.from_client_config(
         config,
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
+        redirect_uri=_get_redirect_uri(),
     )
     # 設定 access_type=offline 以取得 refresh_token
     auth_url, state = flow.authorization_url(
@@ -111,7 +114,7 @@ def handle_oauth_callback(code: str, state: str = ""):
         flow = Flow.from_client_config(
             config,
             scopes=SCOPES,
-            redirect_uri=REDIRECT_URI,
+            redirect_uri=_get_redirect_uri(),
             state=state,
         )
         
