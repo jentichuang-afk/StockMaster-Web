@@ -1,47 +1,112 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from google import genai
 from datetime import datetime, timedelta
+import sys
+import os
+
+# 確保 utils 路徑可以被找到
+sys.path.insert(0, os.path.dirname(__file__))
+from utils.google_drive import (
+    get_google_auth_url,
+    handle_oauth_callback,
+    load_from_drive,
+    save_to_drive,
+    is_logged_in,
+    logout,
+)
 
 # --- 設定頁面配置 ---
 st.set_page_config(page_title="AI 戰情雷達 (雲端永久版)", layout="wide")
 
 st.title("🚀 AI 戰情雷達 - 雲端永久版")
-st.markdown("由於雲端伺服器沒有硬碟儲存空間，請利用**網址參數**來存檔清單，修改後只要將**網址存成書籤**即可永久保存！")
 
-# --- 核心功能：從網址讀取寫入清單 (雲端最穩定存檔方式) ---
-def get_tickers_from_url():
-    """從網址參數讀取清單，並結合 session_state 避免跨分頁遺失"""
-    # Streamlit 新版 query_params 用法
-    params = st.query_params
-    
-    # 1. 優先從網址讀取 (例如使用者剛點開書籤或剛更新)
+# ===========================================================
+# Google OAuth 回呼處理 (必須在所有 UI 之前執行)
+# ===========================================================
+params = st.query_params
+if "code" in params and not is_logged_in():
+    with st.spinner("🔐 正在完成 Google 登入..."):
+        state_val = params.get("state", "")
+        success = handle_oauth_callback(params["code"], state_val)
+    if success:
+        # 清除網址中的 code 參數，避免重複處理
+        st.query_params.clear()
+        st.success("✅ Google 登入成功！")
+        st.rerun()
+    else:
+        err = st.session_state.get("google_auth_error", "未知錯誤")
+        st.error(f"❌ 登入失敗：{err}")
+        st.query_params.clear()
+
+
+# ===========================================================
+# 觀察清單管理（整合 Drive + 網址備用）
+# ===========================================================
+DEFAULT_TICKERS = "2330, 2317, 3034, 2376, 2383, 2027, 0050"
+
+def get_tickers():
+    """依優先順序讀取清單：Drive > session_state > 網址 > 預設"""
+    # 若已登入且尚未從 Drive 載入，則嘗試從 Drive 讀取
+    if is_logged_in() and "drive_tickers_loaded" not in st.session_state:
+        drive_tickers = load_from_drive()
+        if drive_tickers:
+            st.session_state["tickers"] = drive_tickers
+        st.session_state["drive_tickers_loaded"] = True
+
+    if "tickers" in st.session_state:
+        return st.session_state["tickers"]
+
+    # 備用：從網址讀取
     if "tickers" in params:
         st.session_state["tickers"] = params["tickers"]
         return params["tickers"]
-        
-    # 2. 若網址無參數，但 session_state 有，代表是從其他分頁切換回來
-    if "tickers" in st.session_state:
-        # 將 session_state 的清單寫回網址，維持書籤功能
-        st.query_params["tickers"] = st.session_state["tickers"]
-        return st.session_state["tickers"]
-        
-    # 3. 如果都沒有，返回預設值
-    return "2330, 2317, 3034, 2376, 2383, 2027, 0050"
 
-def update_url_tickers(new_tickers):
-    """更新網址參數與 session_state"""
+    return DEFAULT_TICKERS
+
+def update_tickers(new_tickers: str):
+    """更新清單：存入 session_state，若已登入則同步到 Drive"""
     st.session_state["tickers"] = new_tickers
-    st.query_params["tickers"] = new_tickers
+    if is_logged_in():
+        save_to_drive(new_tickers)
+    else:
+        # 未登入時維持網址書籤功能
+        st.query_params["tickers"] = new_tickers
 
-# --- 側邊欄：設定 ---
+
+# ===========================================================
+# 側邊欄：Google 登入區塊
+# ===========================================================
 st.sidebar.header("⚙️ 核心設定")
 
-# 1. 模型選擇
+# --- Google 帳號登入 ---
+st.sidebar.subheader("☁️ Google Drive 同步")
+
+if is_logged_in():
+    email = st.session_state.get("google_user_email", "使用者")
+    st.sidebar.success(f"✅ 已登入\n{email}")
+    if st.sidebar.button("🔄 立即從 Drive 同步"):
+        st.session_state.pop("drive_tickers_loaded", None)
+        st.rerun()
+    if st.sidebar.button("🚪 登出 Google"):
+        logout()
+        st.session_state.pop("drive_tickers_loaded", None)
+        st.rerun()
+else:
+    st.sidebar.info("登入 Google 後，觀察清單將自動儲存於您的 Google Drive，換裝置也不怕遺失！")
+    auth_url, err = get_google_auth_url()
+    if err:
+        st.sidebar.error(f"⚠️ 設定錯誤：{err}")
+    else:
+        st.sidebar.link_button("🔑 登入 Google 帳號", auth_url, use_container_width=True)
+    st.sidebar.caption("未登入時，可用下方網址書籤儲存清單。")
+
+st.sidebar.divider()
+
+# --- AI 模型選擇 ---
 st.sidebar.subheader("🧠 AI 模型引擎")
 model_map = {
     "🚀 最新極速版 (Gemini 3.0 Flash)": "gemini-3-flash-preview",
@@ -54,27 +119,30 @@ selected_label = st.sidebar.selectbox("選擇分析大腦", list(model_map.keys(
 model_name = model_map[selected_label]
 st.session_state['selected_gemini_model'] = model_name
 
-# 2. 觀察清單 (改用網址記憶)
-st.sidebar.subheader("📋 觀察清單 (網址記憶)")
+# --- 觀察清單輸入 ---
+st.sidebar.subheader("📋 觀察清單")
+sync_label = "（已連結 Google Drive ☁️）" if is_logged_in() else "（網址書籤模式）"
+st.sidebar.caption(sync_label)
 
-# A. 讀取目前的清單 (從網址)
-current_tickers = get_tickers_from_url()
+current_tickers = get_tickers()
 
-# B. 顯示輸入框
 user_input = st.sidebar.text_area(
-    "輸入代號 (修改後請點擊外側空白處)", 
-    value=current_tickers, 
+    "輸入代號 (逗號分隔)",
+    value=current_tickers,
     height=150,
-    help="修改此處內容後，網頁最上方網址列會自動把名單加在後面。請將【更新後的網址加入書籤】，下次點開書籤清單就在！"
+    help="登入 Google 後修改清單會自動儲存到雲端；未登入時請將更新後的網址存為書籤。"
 )
 
-# C. 如果使用者修改了清單，更新網址
 if user_input != current_tickers:
-    update_url_tickers(user_input)
-    # 強制重新執行以更新畫面
+    update_tickers(user_input)
+    if is_logged_in():
+        st.sidebar.toast("☁️ 已同步到 Google Drive！", icon="✅")
     st.rerun()
 
-# --- 爬蟲抓中文名 ---
+
+# ===========================================================
+# 爬蟲抓中文名
+# ===========================================================
 @st.cache_data(ttl=86400)
 def get_stock_name_from_web(code):
     try:
@@ -88,7 +156,10 @@ def get_stock_name_from_web(code):
     except: pass
     return f"{code}"
 
-# --- 技術指標計算核心 ---
+
+# ===========================================================
+# 技術指標計算核心
+# ===========================================================
 def calculate_technical_indicators(df):
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -117,7 +188,10 @@ def calculate_technical_indicators(df):
     df['K'] = k_values; df['D'] = d_values
     return df
 
-# --- Gemini AI 分析 ---
+
+# ===========================================================
+# Gemini AI 分析
+# ===========================================================
 def get_gemini_analysis(df, model_id):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
     if not api_key or api_key.startswith("請輸入"):
@@ -143,28 +217,30 @@ def get_gemini_analysis(df, model_id):
     except Exception as e:
         return f"AI 錯誤: {e}"
 
-# --- 抓取數據主程式 ---
+
+# ===========================================================
+# 抓取數據主程式
+# ===========================================================
 def get_stock_data(tickers):
     data_list = []
     clean_tickers = tickers.replace("，", ",").split(',')
     ticker_list = [t.strip() for t in clean_tickers if t.strip()]
-    
+
     my_bar = st.progress(0, text="連線 Yahoo 股市...")
-    
+
     for i, code in enumerate(ticker_list):
         name = get_stock_name_from_web(code)
         symbol = f"{code}.TW"
-        
+
         try:
-            # yf.download 不支援 period="6mo"，改用明確的 start / end
             end_date = datetime.now() + timedelta(days=1)
             start_date = end_date - timedelta(days=180)
-            
+
             df = yf.download(symbol, start=start_date, end=end_date, progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-                
-            if df.empty or len(df) < 20: 
+
+            if df.empty or len(df) < 20:
                 symbol = f"{code}.TWO"
                 df = yf.download(symbol, start=start_date, end=end_date, progress=False)
                 if isinstance(df.columns, pd.MultiIndex):
@@ -172,7 +248,7 @@ def get_stock_data(tickers):
         except Exception as e:
             st.warning(f"⚠️ 獲取 {code} 數據時遭遇連線限制，將暫時跳過。")
             continue
-        
+
         if not df.empty and len(df) > 30:
             df = calculate_technical_indicators(df)
             last = df.iloc[-1]; prev = df.iloc[-2]
@@ -181,11 +257,11 @@ def get_stock_data(tickers):
             vol_ratio = last['Volume'] / df['Volume'].rolling(5).mean().iloc[-1] if df['Volume'].rolling(5).mean().iloc[-1] > 0 else 0
             macd_signal = "🟢 偏多" if last['MACD_Hist'] > 0 else "🔴 偏空"
             kd_signal = "✨ 金叉" if last['K'] > last['D'] and prev['K'] < prev['D'] else ("💀 死叉" if last['K'] < last['D'] and prev['K'] > prev['D'] else "")
-            
+
             final_signal = "觀察"
             if last['MACD_Hist'] > 0 and last['K'] > last['D'] and vol_ratio > 1.0: final_signal = "★ 強勢進攻"
             elif last['RSI'] < 30 and last['K'] < 20: final_signal = "🔫 超跌反彈"
-            
+
             data_list.append({
                 "代號": code, "名稱": name, "現價": round(price, 1),
                 "漲跌%": f"{change_pct:+.2f}%", "量能": f"{round(vol_ratio, 1)}x",
@@ -196,34 +272,41 @@ def get_stock_data(tickers):
     my_bar.empty()
     return pd.DataFrame(data_list)
 
-# --- 主畫面 ---
+
+# ===========================================================
+# 主畫面
+# ===========================================================
+if is_logged_in():
+    st.markdown(f"☁️ **雲端同步模式** — 觀察清單已連結至 Google Drive（`{st.session_state.get('google_user_email', '')}`），修改後自動儲存。")
+else:
+    st.markdown("📌 目前為**書籤模式**。登入 Google 後可自動儲存清單至雲端，免手動存書籤。")
+
 if user_input:
     result_df = get_stock_data(user_input)
     if not result_df.empty:
         st.markdown("💡 **提示：直接點擊下方表格中的任意一列，即可自動跳轉到「個股深度解析」進行深入分析！**")
-        
-        # 使用 Streamlit 內建選擇功能 (不支援 Pandas Styler，故移除自訂顏色)
+
         event = st.dataframe(
-            result_df, 
-            use_container_width=True, 
+            result_df,
+            use_container_width=True,
             height=400,
             on_select="rerun",
             selection_mode="single-row"
         )
-        
-        # 若使用者點擊了某個股票
+
         if len(event.selection.rows) > 0:
             selected_idx = event.selection.rows[0]
             selected_code = result_df.iloc[selected_idx]['代號']
-            # 將代號存入 session_state，讓個股分析頁面自動讀取並執行
             st.session_state['auto_analyze_ticker'] = str(selected_code)
             st.switch_page("pages/1_個股深度解析.py")
-        
+
         st.divider()
         st.subheader("🤖 Gemini 戰情室")
         if st.button("呼叫 AI 操盤手"):
             with st.spinner(f'AI 分析中...'):
                 analysis_result = get_gemini_analysis(result_df, model_name)
                 st.markdown(analysis_result)
-    else: st.warning("查無數據。")
-else: st.info("請輸入代號。")
+    else:
+        st.warning("查無數據。")
+else:
+    st.info("請輸入代號。")
