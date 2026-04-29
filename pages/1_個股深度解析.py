@@ -14,6 +14,80 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="股票大師：個股深度解析", layout="wide", page_icon="🔍")
 st.title("🔍 股票大師：個股全方位深度解析")
 
+# --- 注入自定義 CSS ---
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+.tech-card {
+    background: linear-gradient(145deg, #1e2230, #161a24);
+    border: 1px solid #2d3348;
+    border-radius: 12px;
+    padding: 14px 18px;
+    text-align: center;
+    font-family: 'Inter', sans-serif;
+    position: relative;
+    overflow: hidden;
+}
+.tech-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 12px 12px 0 0;
+}
+.tech-card.bullish::before { background: linear-gradient(90deg, #ff4b4b, #ff8c00); }
+.tech-card.bearish::before { background: linear-gradient(90deg, #00c805, #00ff88); }
+.tech-card.neutral::before { background: linear-gradient(90deg, #888, #aaa); }
+.tech-card .label { font-size: 0.75rem; color: #888; margin-bottom: 4px; letter-spacing: 0.05em; }
+.tech-card .value { font-size: 1.1rem; font-weight: 700; }
+.tech-card .value.red { color: #ff4b4b; }
+.tech-card .value.green { color: #00c805; }
+.tech-card .value.gray { color: #aaa; }
+
+.pattern-section { margin: 20px 0; }
+.pattern-row { display: flex; gap: 16px; }
+.pattern-box {
+    flex: 1;
+    background: linear-gradient(145deg, #1a1e2e, #111420);
+    border: 1px solid #2d3348;
+    border-radius: 12px;
+    padding: 16px;
+    font-family: 'Inter', sans-serif;
+}
+.pattern-box.bullish-box { border-left: 3px solid #ff4b4b; }
+.pattern-box.bearish-box { border-left: 3px solid #00c805; }
+.pattern-title { font-weight: 700; font-size: 1rem; margin-bottom: 10px; }
+.pattern-title.red { color: #ff4b4b; }
+.pattern-title.green { color: #00c805; }
+.pattern-desc { font-size: 0.85rem; color: #ccc; line-height: 1.6; margin-top: 8px; }
+.pattern-status { font-size: 0.8rem; margin-top: 8px; padding: 4px 10px; border-radius: 20px; display: inline-block; }
+.pattern-status.active-bull { background: rgba(255,75,75,0.15); color: #ff6b6b; border: 1px solid rgba(255,75,75,0.3); }
+.pattern-status.active-bear { background: rgba(0,200,5,0.15); color: #00e806; border: 1px solid rgba(0,200,5,0.3); }
+.pattern-status.watch { background: rgba(150,150,150,0.15); color: #aaa; border: 1px solid rgba(150,150,150,0.3); }
+
+.kline-table { width: 100%; border-collapse: collapse; font-family: 'Inter', sans-serif; margin-top: 8px; }
+.kline-table th { background: #1f2533; color: #888; font-weight: 500; font-size: 0.78rem; padding: 10px 12px; text-align: left; border-bottom: 1px solid #2d3348; }
+.kline-table td { padding: 9px 12px; font-size: 0.82rem; color: #ccc; border-bottom: 1px solid #1e2230; }
+.kline-table tr:hover td { background: rgba(255,255,255,0.03); }
+.kline-icon { font-size: 1.3rem; }
+.bull-tag { color: #ff4b4b; font-weight: 600; }
+.bear-tag { color: #00c805; font-weight: 600; }
+.neu-tag  { color: #aaa; font-weight: 600; }
+
+.signal-item {
+    display: flex; align-items: center; gap: 12px;
+    background: #1a1e2e; border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 8px;
+    border-left: 3px solid #2d3348;
+    font-family: 'Inter', sans-serif; font-size: 0.85rem;
+}
+.signal-item.bull-signal { border-left-color: #ff4b4b; }
+.signal-item.bear-signal { border-left-color: #00c805; }
+.signal-item.neu-signal  { border-left-color: #888; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- 安全性設定 ---
 # API keys are fetched dynamically when `call_ai` is executed
 
@@ -119,7 +193,216 @@ def add_indicators(df):
     
     return df
 
-# --- 5. AI Prompt ---
+# --- 5. 技術面視覺化輔助函式 ---
+
+def get_tech_status(df):
+    """分析近期資料，回傳各指標狀態字典"""
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    status = {}
+
+    # 均線排列
+    ma5, ma20, ma60 = last['MA5'], last['MA20'], last['MA60']
+    if ma5 > ma20 > ma60:
+        status['ma_struct'] = ('多頭排列', 'bullish', 'red')
+    elif ma5 < ma20 < ma60:
+        status['ma_struct'] = ('空頭排列', 'bearish', 'green')
+    else:
+        status['ma_struct'] = ('均線糾結', 'neutral', 'gray')
+
+    # 趨勢方向 (價格 vs MA60)
+    price = last['Close']
+    if price > ma60 * 1.03:
+        status['trend'] = ('強勢多頭', 'bullish', 'red')
+    elif price > ma60:
+        status['trend'] = ('偏多', 'bullish', 'red')
+    elif price < ma60 * 0.97:
+        status['trend'] = ('強勢空頭', 'bearish', 'green')
+    else:
+        status['trend'] = ('偏空', 'bearish', 'green')
+
+    # KD 狀態
+    k, d = last['K'], last['D']
+    pk, pd_ = prev['K'], prev['D']
+    if k > 80:
+        status['kd'] = ('高檔鈍化', 'bullish', 'red')
+    elif k < 20:
+        status['kd'] = ('低檔鈍化', 'bearish', 'green')
+    elif k > d and pk < pd_:
+        status['kd'] = ('黃金交叉', 'bullish', 'red')
+    elif k < d and pk > pd_:
+        status['kd'] = ('死亡交叉', 'bearish', 'green')
+    else:
+        status['kd'] = (f'K{k:.0f}/D{d:.0f}', 'neutral', 'gray')
+
+    # MACD 狀態
+    hist = last['MACD_Hist']
+    prev_hist = prev['MACD_Hist']
+    if hist > 0 and hist > prev_hist:
+        status['macd'] = ('多頭擴張', 'bullish', 'red')
+    elif hist > 0 and hist < prev_hist:
+        status['macd'] = ('多頭收斂', 'neutral', 'gray')
+    elif hist < 0 and hist < prev_hist:
+        status['macd'] = ('空頭擴張', 'bearish', 'green')
+    else:
+        status['macd'] = ('空頭收斂', 'neutral', 'gray')
+
+    # 量能狀態
+    vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+    vol_ratio = last['Volume'] / vol_ma5 if vol_ma5 > 0 else 1
+    if vol_ratio > 1.5:
+        status['volume'] = (f'爆量 {vol_ratio:.1f}x', 'bullish', 'red')
+    elif vol_ratio > 1.0:
+        status['volume'] = (f'量增 {vol_ratio:.1f}x', 'bullish', 'red')
+    elif vol_ratio < 0.6:
+        status['volume'] = (f'縮量 {vol_ratio:.1f}x', 'bearish', 'green')
+    else:
+        status['volume'] = (f'量平 {vol_ratio:.1f}x', 'neutral', 'gray')
+
+    return status
+
+
+def render_tech_overview(status):
+    """產生技術總覽儀表板 HTML"""
+    items = [
+        ('趨勢方向', status['trend']),
+        ('均線結構', status['ma_struct']),
+        ('KD 指標', status['kd']),
+        ('MACD', status['macd']),
+        ('量能狀態', status['volume']),
+    ]
+    cards = ""
+    for label, (val, card_cls, color_cls) in items:
+        cards += f"""
+        <div class="tech-card {card_cls}">
+            <div class="label">{label}</div>
+            <div class="value {color_cls}">{val}</div>
+        </div>"""
+    return f'<div style="display:flex;gap:12px;margin-bottom:20px;">{cards}</div>'
+
+
+def render_pattern_diagrams(status):
+    """產生 W底/M頭 型態圖解 HTML"""
+    # 判斷目前型態狀態 (簡易版：依均線 + MACD 組合)
+    trend_cls, ma_cls = status['trend'][1], status['ma_struct'][1]
+    if trend_cls == 'bullish' and ma_cls == 'bullish':
+        w_status = '<span class="pattern-status active-bull">✅ W底完成・多頭延續</span>'
+        m_status = '<span class="pattern-status watch">👀 觀察中・尚未成形</span>'
+    elif trend_cls == 'bearish' and ma_cls == 'bearish':
+        w_status = '<span class="pattern-status watch">👀 觀察中・尚未成形</span>'
+        m_status = '<span class="pattern-status active-bear">⚠️ M頭觀察中・留意破線</span>'
+    else:
+        w_status = '<span class="pattern-status watch">👀 盤整中</span>'
+        m_status = '<span class="pattern-status watch">👀 盤整中</span>'
+
+    return f"""
+<div class="pattern-section">
+  <div class="pattern-row">
+    <div class="pattern-box bullish-box">
+      <div class="pattern-title red">📈 W底型態（多頭訊號）</div>
+      <svg width="100%" height="70" viewBox="0 0 220 70">
+        <line x1="10" y1="38" x2="210" y2="38" stroke="#444" stroke-dasharray="5,3"/>
+        <text x="110" y="28" fill="#888" font-size="10" text-anchor="middle">頸線壓力區</text>
+        <polyline points="10,20 50,60 90,35 130,60 170,10" fill="none" stroke="#ff4b4b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="50" cy="60" r="4" fill="#ff8c00"/><text x="50" y="70" fill="#ff8c00" font-size="9" text-anchor="middle">左底</text>
+        <circle cx="130" cy="60" r="4" fill="#ff8c00"/><text x="130" y="70" fill="#ff8c00" font-size="9" text-anchor="middle">右底</text>
+        <text x="175" y="8" fill="#ff4b4b" font-size="9">突破!</text>
+      </svg>
+      <div class="pattern-desc">突破頸線 → 趨勢轉強，目標量測：<br>頸線 + (頸線 - 底部) 的距離</div>
+      {w_status}
+    </div>
+    <div class="pattern-box bearish-box">
+      <div class="pattern-title green">📉 M頭型態（轉弱訊號）</div>
+      <svg width="100%" height="70" viewBox="0 0 220 70">
+        <line x1="10" y1="38" x2="210" y2="38" stroke="#444" stroke-dasharray="5,3"/>
+        <text x="110" y="50" fill="#888" font-size="10" text-anchor="middle">頸線支撐區</text>
+        <polyline points="10,60 50,10 90,35 130,10 170,60" fill="none" stroke="#00c805" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="50" cy="10" r="4" fill="#00c805"/><text x="50" y="8" fill="#00c805" font-size="9" text-anchor="middle">頭部</text>
+        <circle cx="130" cy="10" r="4" fill="#00c805"/><text x="130" y="8" fill="#00c805" font-size="9" text-anchor="middle">頭部</text>
+        <text x="175" y="65" fill="#00c805" font-size="9">跌破!</text>
+      </svg>
+      <div class="pattern-desc">跌破頸線 → 多翻空，下跌目標：<br>頸線 - (頭部 - 頸線) 的距離</div>
+      {m_status}
+    </div>
+  </div>
+</div>"""
+
+
+def render_kline_table():
+    """產生 K線百科表 HTML"""
+    rows = [
+        ("十字線",     "＋",       "開盤與收盤接近，上下影線均存在",  "多空僵持，轉折訊號", "neu-tag",  "觀望"),
+        ("長十字線",   "✛",       "上下影線極長",                    "劇烈震盪，變盤訊號", "neu-tag",  "觀望"),
+        ("紅三軍",     "🏮🏮🏮",  "連續三根紅K，收盤逐日墊高",       "多頭強勢訊號",       "bull-tag", "多"),
+        ("三隻烏鴉",   "🖤🖤🖤",  "連續三根黑K，收盤逐日下移",       "空頭強勢訊號",       "bear-tag", "空"),
+        ("晨星",       "🌟",       "下跌後出現小實體+長紅",           "底部反轉訊號",       "bull-tag", "多"),
+        ("夜星",       "⭐",       "上漲後出現小實體+長黑",           "頂部反轉訊號",       "bear-tag", "空"),
+        ("錘子線",     "🔨",       "長下影線，實體在上方",            "下跌末端支撐訊號",   "bull-tag", "多"),
+        ("吊人線",     "🪢",       "長下影線，出現在高點",            "上漲末端警示訊號",   "bear-tag", "空"),
+    ]
+    trs = ""
+    for name, icon, desc, meaning, tag, side in rows:
+        trs += f"""<tr>
+            <td><b>{name}</b></td>
+            <td style="text-align:center;font-size:1.1rem;">{icon}</td>
+            <td>{desc}</td>
+            <td>{meaning}</td>
+            <td class="{tag}">{side}</td>
+        </tr>"""
+    return f"""
+<div style="margin-top:24px;">
+  <div style="font-weight:700;font-size:1rem;color:#ddd;margin-bottom:10px;">📖 K線型態百科</div>
+  <table class="kline-table">
+    <thead><tr><th>型態名稱</th><th>圖示</th><th>說明</th><th>市場意義</th><th>多/空</th></tr></thead>
+    <tbody>{trs}</tbody>
+  </table>
+</div>"""
+
+
+def render_recent_signals(df):
+    """分析近 10 根 K 棒，產生近期訊號列表 HTML"""
+    signals = []
+    d10 = df.tail(10).copy()
+
+    for i in range(1, len(d10)):
+        row = d10.iloc[i]
+        prev = d10.iloc[i - 1]
+        date_str = str(row.name)[:10]
+
+        # KD 黃金/死亡交叉
+        if row['K'] > row['D'] and prev['K'] < prev['D']:
+            signals.append(('bull-signal', '✨', f'{date_str}　KD 黃金交叉 (K={row["K"]:.0f} 上穿 D={row["D"]:.0f})', '多'))
+        elif row['K'] < row['D'] and prev['K'] > prev['D']:
+            signals.append(('bear-signal', '💀', f'{date_str}　KD 死亡交叉 (K={row["K"]:.0f} 跌穿 D={row["D"]:.0f})', '空'))
+
+        # MACD 柱轉正/負
+        if row['MACD_Hist'] > 0 and prev['MACD_Hist'] < 0:
+            signals.append(('bull-signal', '📶', f'{date_str}　MACD 柱翻紅，動能轉多', '多'))
+        elif row['MACD_Hist'] < 0 and prev['MACD_Hist'] > 0:
+            signals.append(('bear-signal', '📉', f'{date_str}　MACD 柱翻黑，動能轉空', '空'))
+
+        # 量能異常
+        vol_ma = df['Volume'].rolling(5).mean().iloc[-1]
+        if row['Volume'] > vol_ma * 2:
+            signals.append(('bull-signal' if row['Close'] > row['Open'] else 'bear-signal',
+                           '💥', f'{date_str}　爆量 ({row["Volume"]/vol_ma:.1f}x均量)，{"攻擊量" if row["Close"] > row["Open"] else "出貨量"}', '注意'))
+
+    if not signals:
+        signals.append(('neu-signal', '🔍', '近期無明顯技術訊號，市場處於觀望階段', '-'))
+
+    items_html = ""
+    for cls, icon, text, side in signals[-5:]:  # 最多顯示 5 個
+        color = "#ff4b4b" if "bull" in cls else ("#00c805" if "bear" in cls else "#888")
+        items_html += f'<div class="signal-item {cls}"><span style="font-size:1.1rem">{icon}</span><span style="flex:1;color:#ccc">{text}</span><span style="color:{color};font-weight:700;font-size:0.8rem">{side}</span></div>'
+
+    return f"""
+<div style="margin-top:20px;">
+  <div style="font-weight:700;font-size:1rem;color:#ddd;margin-bottom:10px;">🎯 近期技術訊號偵測</div>
+  {items_html}
+</div>"""
+
+
+# --- 6. AI Prompt ---
 def get_prompt(symbol, last_close, technical_data):
     now = datetime.now().strftime("%Y-%m-%d")
     
@@ -330,6 +613,12 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議", "🏛️ 基本面分析", "📰 市場情緒分析", "🗣️ AI 多空辯論"])
         
         with tab1:
+            # --- 技術面總覽儀表板 ---
+            tech_status = get_tech_status(df)
+            st.markdown("#### 📊 技術指標總覽")
+            st.markdown(render_tech_overview(tech_status), unsafe_allow_html=True)
+
+            # --- K 線圖表 ---
             rows = 2
             if show_macd: rows += 1
             if show_obv: rows += 1
@@ -361,6 +650,19 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             
             fig.update_layout(height=800, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
+
+            # --- 近期訊號偵測 ---
+            st.markdown(render_recent_signals(df), unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # --- 型態圖解 (W底 / M頭) ---
+            st.markdown("#### 📐 技術型態圖解")
+            st.markdown(render_pattern_diagrams(tech_status), unsafe_allow_html=True)
+
+            # --- K 線百科 ---
+            st.markdown(render_kline_table(), unsafe_allow_html=True)
+
 
         with tab2:
             st.markdown("### 🤖 AI 技術面操作建議")
