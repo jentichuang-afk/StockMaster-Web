@@ -109,6 +109,7 @@ st.sidebar.divider()
 # --- AI 模型選擇 ---
 st.sidebar.subheader("🧠 AI 模型引擎")
 model_map = {
+    "🔥 最新深度旗艦版 (Gemini 3.1 Pro)": "gemini-3.1-pro-preview",
     "🚀 最新極速版 (Gemini 3.0 Flash)": "gemini-3-flash-preview",
     "⚡ 穩定極速版 (Gemini 2.5 Flash)": "gemini-2.5-flash",
     "🧠 最新深度版 (Gemini 2.5 Pro)": "gemini-2.5-pro",
