@@ -328,8 +328,73 @@ def render_pattern_diagrams(status):
 </div>"""
 
 
-def render_kline_table():
-    """產生 K線百科表 HTML"""
+def detect_kline_patterns(df):
+    """分析最近幾根 K 棒，回傳一個包含目前已滿足型態名稱的 set"""
+    detected = set()
+    if len(df) < 3:
+        return detected
+
+    c0 = df.iloc[-1]  # 最近一根
+    c1 = df.iloc[-2]  # 前一根
+    c2 = df.iloc[-3]  # 前兩根
+
+    # --- 單根型態 (最近一根) ---
+    o, h, l, c = float(c0['Open']), float(c0['High']), float(c0['Low']), float(c0['Close'])
+    body = abs(c - o)
+    total_range = h - l if h != l else 1e-9
+    upper_shadow = h - max(o, c)
+    lower_shadow = min(o, c) - l
+
+    # 十字線：實體 < 全段 10%，且上下影線都存在
+    if body / total_range < 0.10 and upper_shadow > 0 and lower_shadow > 0:
+        detected.add("十字線")
+        # 長十字線：上下影線各 >= 全段 30%
+        if upper_shadow / total_range >= 0.30 and lower_shadow / total_range >= 0.30:
+            detected.add("長十字線")
+
+    # 錘子線：下影線 >= 實體 2倍，上影線很短，實體在上半
+    if lower_shadow >= body * 2 and upper_shadow <= body * 0.5 and body > 0:
+        if c1['Close'] > c2['Close']:  # 前兩根下跌趨勢才算
+            detected.add("吊人線")
+        else:
+            detected.add("錘子線")
+
+    # --- 三根型態 ---
+    o0, h0, l0, c0_ = float(c0['Open']), float(c0['High']), float(c0['Low']), float(c0['Close'])
+    o1, h1, l1, c1_ = float(c1['Open']), float(c1['High']), float(c1['Low']), float(c1['Close'])
+    o2, h2, l2, c2_ = float(c2['Open']), float(c2['High']), float(c2['Low']), float(c2['Close'])
+
+    bull0 = c0_ > o0  # 最近一根是紅K
+    bull1 = c1_ > o1
+    bull2 = c2_ > o2
+
+    # 紅三軍：連續三根紅K，收盤逐日墊高
+    if bull0 and bull1 and bull2 and c0_ > c1_ and c1_ > c2_:
+        detected.add("紅三軍")
+
+    # 三隻烏鴉：連續三根黑K，收盤逐日下移
+    if not bull0 and not bull1 and not bull2 and c0_ < c1_ and c1_ < c2_:
+        detected.add("三隻烏鴉")
+
+    # 晨星：第一根大黑K，第二根小實體(任何顏色)，第三根大紅K，且第三根收盤 > 第一根中點
+    body2 = abs(c2_ - o2)
+    body1 = abs(c1_ - o1)
+    body0 = abs(c0_ - o0)
+    mid2 = (o2 + c2_) / 2
+    if (not bull2) and (body1 < body2 * 0.4) and bull0 and (c0_ > mid2):
+        detected.add("晨星")
+
+    # 夜星：第一根大紅K，第二根小實體，第三根大黑K，且第三根收盤 < 第一根中點
+    if bull2 and (body1 < body2 * 0.4) and (not bull0) and (c0_ < mid2):
+        detected.add("夜星")
+
+    return detected
+
+
+def render_kline_table(detected_patterns=None):
+    """產生 K線百科表 HTML，如有偵測到的型態則高亮對應列"""
+    if detected_patterns is None:
+        detected_patterns = set()
     rows = [
         ("十字線",     "＋",       "開盤與收盤接近，上下影線均存在",  "多空僵持，轉折訊號", "neu-tag",  "觀望"),
         ("長十字線",   "✛",       "上下影線極長",                    "劇烈震盪，變盤訊號", "neu-tag",  "觀望"),
@@ -342,16 +407,32 @@ def render_kline_table():
     ]
     trs = ""
     for name, icon, desc, meaning, tag, side in rows:
-        trs += f"""<tr>
-            <td><b>{name}</b></td>
+        is_active = name in detected_patterns
+        if is_active:
+            # 決定高亮背景色（依多空分類）
+            if tag == "bull-tag":
+                row_style = 'background:rgba(255,75,75,0.12); border-left: 3px solid #ff4b4b;'
+            elif tag == "bear-tag":
+                row_style = 'background:rgba(0,200,5,0.12); border-left: 3px solid #00c805;'
+            else:
+                row_style = 'background:rgba(255,200,0,0.10); border-left: 3px solid #ffcc00;'
+            active_badge = ' <span style="background:#ff4b4b;color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700;">今日出現</span>' if tag == 'bull-tag' else ' <span style="background:#00c805;color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700;">今日出現</span>' if tag == 'bear-tag' else ' <span style="background:#ffcc00;color:#111;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700;">今日出現</span>'
+        else:
+            row_style = ''
+            active_badge = ''
+        trs += f"""<tr style="{row_style}">
+            <td><b>{name}</b>{active_badge}</td>
             <td style="text-align:center;font-size:1.1rem;">{icon}</td>
             <td>{desc}</td>
             <td>{meaning}</td>
             <td class="{tag}">{side}</td>
         </tr>"""
+
+    active_count = len(detected_patterns)
+    header_note = f' <span style="font-size:0.8rem;color:#ffcc00;font-weight:400;">⚡ 今日偵測到 {active_count} 個型態</span>' if active_count > 0 else ''
     return f"""
 <div style="margin-top:24px;">
-  <div style="font-weight:700;font-size:1rem;color:#ddd;margin-bottom:10px;">📖 K線型態百科</div>
+  <div style="font-weight:700;font-size:1rem;color:#ddd;margin-bottom:10px;">📖 K線型態百科{header_note}</div>
   <table class="kline-table">
     <thead><tr><th>型態名稱</th><th>圖示</th><th>說明</th><th>市場意義</th><th>多/空</th></tr></thead>
     <tbody>{trs}</tbody>
@@ -660,8 +741,9 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             st.markdown("#### 📐 技術型態圖解")
             st.markdown(render_pattern_diagrams(tech_status), unsafe_allow_html=True)
 
-            # --- K 線百科 ---
-            st.markdown(render_kline_table(), unsafe_allow_html=True)
+            # --- K 線百科（含今日型態高亮）---
+            detected_patterns = detect_kline_patterns(df)
+            st.markdown(render_kline_table(detected_patterns), unsafe_allow_html=True)
 
 
         with tab2:
