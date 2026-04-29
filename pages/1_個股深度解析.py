@@ -429,7 +429,8 @@ def render_kline_table(detected_patterns=None):
         </tr>"""
 
     active_count = len(detected_patterns)
-    header_note = f' <span style="font-size:0.8rem;color:#ffcc00;font-weight:400;">⚡ 今日偵測到 {active_count} 個型態</span>' if active_count > 0 else ''
+    header_note = f' <span style="font-size:0.8rem;color:#ffcc00;font-weight:400;">⚡ 今日偵測到 {active_count} 個型態</span>' if active_count > 0 else ' <span style="font-size:0.8rem;color:#666;font-weight:400;">— 今日無出現</span>'
+    no_pattern_msg = '' if active_count > 0 else '<div style="margin-top:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px;border-left:3px solid #444;font-size:0.85rem;color:#888;">🔍 今日 K 線未出現任何特定型態，市場處於常態整理，請繼續觀察後續 K 棒變化。</div>'
     return f"""
 <div style="margin-top:24px;">
   <div style="font-weight:700;font-size:1rem;color:#ddd;margin-bottom:10px;">📖 K線型態百科{header_note}</div>
@@ -437,7 +438,9 @@ def render_kline_table(detected_patterns=None):
     <thead><tr><th>型態名稱</th><th>圖示</th><th>說明</th><th>市場意義</th><th>多/空</th></tr></thead>
     <tbody>{trs}</tbody>
   </table>
+  {no_pattern_msg}
 </div>"""
+
 
 
 def render_recent_signals(df):
