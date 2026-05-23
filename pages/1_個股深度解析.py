@@ -598,8 +598,33 @@ def call_ai(model_type, prompt):
     return "未知的模型類型"
 
 
-def call_expert_chat(provider, model_name, system_prompt, history):
+def fetch_stock_news(symbol: str, max_items: int = 10) -> str:
+    """使用 yfinance 抓取個股最新新聞標題，回傳格式化字串供注入 system prompt。"""
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news or []
+        if not news:
+            return "（暫無最新新聞）"
+        lines = []
+        for i, item in enumerate(news[:max_items], 1):
+            content = item.get("content", {})
+            title = content.get("title") or item.get("title", "(無標題)")
+            pub = content.get("pubDate") or item.get("providerPublishTime", "")
+            if pub and not isinstance(pub, str):
+                try:
+                    pub = datetime.utcfromtimestamp(pub).strftime("%Y-%m-%d")
+                except Exception:
+                    pub = str(pub)
+            pub_str = f" ({pub})"
+            lines.append(f"{i}. {title}{pub_str}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"（新聞抓取失敗: {e}）"
+
+
+def call_expert_chat(provider, model_name, system_prompt, history, symbol=""):
     """Non-streaming fallback: returns full response as string."""
+    from google.genai import types as genai_types
     try:
         if provider == 'Google':
             api_key = st.secrets.get("GEMINI_API_KEY")
@@ -610,9 +635,14 @@ def call_expert_chat(provider, model_name, system_prompt, history):
                 role = 'user' if msg['role'] == 'user' else 'model'
                 text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 contents.append({'role': role, 'parts': [{'text': text}]})
+            # 啟用 Google Search 聯網搜尋工具
+            search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
             response = client.models.generate_content(
                 model=model_name, contents=contents,
-                config={'system_instruction': system_prompt}
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    tools=[search_tool]
+                )
             )
             return response.text
 
@@ -624,8 +654,11 @@ def call_expert_chat(provider, model_name, system_prompt, history):
                 api_key = st.secrets.get("OPENROUTER_API_KEY")
                 base_url = "https://openrouter.ai/api/v1"
             if not api_key: return f"{provider} API Key 未設定"
+            # 預抓最新新聞注入 system prompt
+            news_text = fetch_stock_news(symbol) if symbol else "（未指定股票代號）"
+            enriched_prompt = system_prompt + f"\n\n【最新市場新聞（來自 Yahoo Finance）】：\n{news_text}"
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            messages = [{"role": "system", "content": system_prompt}]
+            messages = [{"role": "system", "content": enriched_prompt}]
             for msg in history:
                 text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 messages.append({"role": msg['role'], "content": text})
@@ -636,8 +669,12 @@ def call_expert_chat(provider, model_name, system_prompt, history):
     return "未知的 Provider"
 
 
-def stream_expert_chat(provider, model_name, system_prompt, history):
-    """Streaming version: yields text chunks so st.write_stream() can render in real time."""
+def stream_expert_chat(provider, model_name, system_prompt, history, symbol=""):
+    """Streaming version: yields text chunks so st.write_stream() can render in real time.
+    - Google (Gemini): uses native google_search grounding tool for real-time web search.
+    - Nvidia / OpenRouter: pre-fetches latest Yahoo Finance news and injects into system prompt.
+    """
+    from google.genai import types as genai_types
     try:
         if provider == 'Google':
             api_key = st.secrets.get("GEMINI_API_KEY")
@@ -649,9 +686,14 @@ def stream_expert_chat(provider, model_name, system_prompt, history):
                 role = 'user' if msg['role'] == 'user' else 'model'
                 text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 contents.append({'role': role, 'parts': [{'text': text}]})
+            # 啟用 Google Search 聯網搜尋工具（Gemini 會自動決定何時搜尋）
+            search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
             for chunk in client.models.generate_content_stream(
                 model=model_name, contents=contents,
-                config={'system_instruction': system_prompt}
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    tools=[search_tool]
+                )
             ):
                 if chunk.text:
                     yield chunk.text
@@ -665,8 +707,11 @@ def stream_expert_chat(provider, model_name, system_prompt, history):
                 base_url = "https://openrouter.ai/api/v1"
             if not api_key:
                 yield f"{provider} API Key 未設定"; return
+            # 預抓最新新聞注入 system prompt，補強模型的即時資訊
+            news_text = fetch_stock_news(symbol) if symbol else "（未指定股票代號）"
+            enriched_prompt = system_prompt + f"\n\n【最新市場新聞（來自 Yahoo Finance，請務必參考）】：\n{news_text}"
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            messages = [{"role": "system", "content": system_prompt}]
+            messages = [{"role": "system", "content": enriched_prompt}]
             for msg in history:
                 text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 messages.append({"role": msg['role'], "content": text})
@@ -1393,15 +1438,17 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         
                         # 即時串流顯示該專家的回覆
                         expert_avatar = {"巴菲特價值專員": "🎩", "凱薩琳科技女皇": "👑", "索羅斯總經獵手": "🦅"}.get(expert_name, "🤖")
+                        search_badge = "🔍 Google Search" if active_cfg["provider"] == "Google" else "📰 Yahoo Finance 新聞"
                         with st.chat_message("assistant", avatar=expert_avatar):
-                            st.markdown(f"**{expert_name}** *({active_cfg['model']})*")
+                            st.markdown(f"**{expert_name}** *({active_cfg['model']})* &nbsp; `{search_badge}`")
                             # write_stream 接收 generator，邊產生 token 邊渲染，並回傳完整字串
                             ai_response = st.write_stream(
                                 stream_expert_chat(
                                     provider=active_cfg["provider"],
                                     model_name=active_cfg["model"],
                                     system_prompt=system_instruction,
-                                    history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                                    history=st.session_state[f"expert_chat_history_{final_symbol}"],
+                                    symbol=final_symbol
                                 )
                             )
                         
