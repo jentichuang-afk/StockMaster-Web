@@ -1206,10 +1206,12 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             分析股票標的：{final_symbol}
             目前最新價格：{last['Close']}
             技術面狀態：
-            - MA5: {last['MA5']:.2f}, MA20: {last['MA20']:.2f}, MA60: {last['MA60']:.2f}
-            - RSI5: {last['RSI5']:.2f}, RSI10: {last['RSI10']:.2f}
-            - KD交叉狀態: {tech_status.get('kd_status', '未知')}
-            - MACD柱狀體: {last['MACD_Hist']:.4f}
+            - 收盤價: {last['Close']:.2f}
+            - 均線狀態: MA5={last['MA5']:.2f}, MA20={last['MA20']:.2f}, MA60={last['MA60']:.2f} ({tech_status.get('ma_struct', ('未知',))[0]})
+            - 趨勢方向: {tech_status.get('trend', ('未知',))[0]}
+            - KD指標狀態: K={last['K']:.1f}, D={last['D']:.1f} ({tech_status.get('kd', ('未知',))[0]})
+            - MACD柱狀體: {last['MACD_Hist']:.4f} ({tech_status.get('macd', ('未知',))[0]})
+            - 量能狀態: {tech_status.get('volume', ('未知',))[0]}
             """
             
             # 讓使用者可以選擇由哪一位專家回答，或者接續發表看法
