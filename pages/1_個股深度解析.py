@@ -599,61 +599,88 @@ def call_ai(model_type, prompt):
 
 
 def call_expert_chat(provider, model_name, system_prompt, history):
-    # provider: 'Google', 'Nvidia', 'OpenRouter'
+    """Non-streaming fallback: returns full response as string."""
     try:
         if provider == 'Google':
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key: return "Google API Key 未設定"
             client = genai.Client(api_key=api_key)
-            
             contents = []
             for msg in history:
                 role = 'user' if msg['role'] == 'user' else 'model'
                 text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 contents.append({'role': role, 'parts': [{'text': text}]})
-            
             response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
+                model=model_name, contents=contents,
                 config={'system_instruction': system_prompt}
             )
             return response.text
 
-        elif provider == 'Nvidia':
-            api_key = st.secrets.get("NVIDIA_API_KEY")
-            if not api_key: return "Nvidia API Key 未設定"
-            client = openai.OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
-            
+        elif provider in ('Nvidia', 'OpenRouter'):
+            if provider == 'Nvidia':
+                api_key = st.secrets.get("NVIDIA_API_KEY")
+                base_url = "https://integrate.api.nvidia.com/v1"
+            else:
+                api_key = st.secrets.get("OPENROUTER_API_KEY")
+                base_url = "https://openrouter.ai/api/v1"
+            if not api_key: return f"{provider} API Key 未設定"
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
             messages = [{"role": "system", "content": system_prompt}]
             for msg in history:
                 text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 messages.append({"role": msg['role'], "content": text})
-            
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages
-            )
+            response = client.chat.completions.create(model=model_name, messages=messages)
             return response.choices[0].message.content
-
-        elif provider == 'OpenRouter':
-            api_key = st.secrets.get("OPENROUTER_API_KEY")
-            if not api_key: return "OpenRouter API Key 未設定"
-            client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-            
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in history:
-                text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
-                messages.append({"role": msg['role'], "content": text})
-                
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages
-            )
-            return response.choices[0].message.content
-            
     except Exception as e:
         return f"API 呼叫失敗: {str(e)}"
     return "未知的 Provider"
+
+
+def stream_expert_chat(provider, model_name, system_prompt, history):
+    """Streaming version: yields text chunks so st.write_stream() can render in real time."""
+    try:
+        if provider == 'Google':
+            api_key = st.secrets.get("GEMINI_API_KEY")
+            if not api_key:
+                yield "Google API Key 未設定"; return
+            client = genai.Client(api_key=api_key)
+            contents = []
+            for msg in history:
+                role = 'user' if msg['role'] == 'user' else 'model'
+                text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
+                contents.append({'role': role, 'parts': [{'text': text}]})
+            for chunk in client.models.generate_content_stream(
+                model=model_name, contents=contents,
+                config={'system_instruction': system_prompt}
+            ):
+                if chunk.text:
+                    yield chunk.text
+
+        elif provider in ('Nvidia', 'OpenRouter'):
+            if provider == 'Nvidia':
+                api_key = st.secrets.get("NVIDIA_API_KEY")
+                base_url = "https://integrate.api.nvidia.com/v1"
+            else:
+                api_key = st.secrets.get("OPENROUTER_API_KEY")
+                base_url = "https://openrouter.ai/api/v1"
+            if not api_key:
+                yield f"{provider} API Key 未設定"; return
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in history:
+                text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
+                messages.append({"role": msg['role'], "content": text})
+            stream = client.chat.completions.create(
+                model=model_name, messages=messages, stream=True
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+        else:
+            yield "未知的 Provider"
+    except Exception as e:
+        yield f"API 呼叫失敗: {str(e)}"
 
 def update_dynamic_questions(final_symbol, history, status_desc):
     api_key = st.secrets.get("GEMINI_API_KEY")
@@ -1344,7 +1371,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         "model": "User"
                     })
                     
-                    # B. 依次呼叫被選取專家的 API
+                    # B. 依次呼叫被選取專家的 API，使用 streaming 讓每位專家邊想邊顯示
                     for active_cfg in active_experts:
                         expert_name = active_cfg["name"]
                         
@@ -1364,14 +1391,21 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         3. 請用精煉且有說服力的繁體中文回答，語氣要活生生像個獨立的專家。
                         """
                         
-                        with st.spinner(f"🕵️‍♂️ {expert_name} 正在思考並研判數據中..."):
-                            ai_response = call_expert_chat(
-                                provider=active_cfg["provider"],
-                                model_name=active_cfg["model"],
-                                system_prompt=system_instruction,
-                                history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                        # 即時串流顯示該專家的回覆
+                        expert_avatar = {"巴菲特價值專員": "🎩", "凱薩琳科技女皇": "👑", "索羅斯總經獵手": "🦅"}.get(expert_name, "🤖")
+                        with st.chat_message("assistant", avatar=expert_avatar):
+                            st.markdown(f"**{expert_name}** *({active_cfg['model']})*")
+                            # write_stream 接收 generator，邊產生 token 邊渲染，並回傳完整字串
+                            ai_response = st.write_stream(
+                                stream_expert_chat(
+                                    provider=active_cfg["provider"],
+                                    model_name=active_cfg["model"],
+                                    system_prompt=system_instruction,
+                                    history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                                )
                             )
                         
+                        # 串流結束後才存入 history，供下一位專家參考
                         st.session_state[f"expert_chat_history_{final_symbol}"].append({
                             "role": "assistant",
                             "name": expert_name,
@@ -1388,4 +1422,5 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     
                     # D. 清空輸入字串暫存
                     st.session_state["query_input_val"] = ""
+                    st.session_state["user_question_input"] = ""
                     st.rerun()
