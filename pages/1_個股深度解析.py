@@ -230,10 +230,11 @@ def fetch_openrouter_models(api_key):
         if not api_key or api_key.startswith("請輸入"): return ["請先設定 API Key"]
         client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
         models = client.models.list()
-        # OpenRouter returns hundreds, maybe just sort and return
-        return sorted([m.id for m in models.data])
+        # 只保留名稱中含有 "free" 的免費模型
+        free_models = sorted([m.id for m in models.data if "free" in m.id.lower()])
+        return free_models if free_models else ["openrouter/free"]
     except Exception as e:
-        return ["anthropic/claude-3.5-sonnet", "openai/gpt-4o", "meta-llama/llama-3-70b-instruct"]
+        return ["meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free", "mistralai/mistral-7b-instruct:free"]
 
 # --- 6. 技術面視覺化輔助函式 ---
 
