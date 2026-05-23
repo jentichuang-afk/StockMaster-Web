@@ -622,10 +622,54 @@ def fetch_stock_news(symbol: str, max_items: int = 10) -> str:
         return f"（新聞抓取失敗: {e}）"
 
 
-def call_expert_chat(provider, model_name, system_prompt, history, symbol=""):
+@st.cache_data(ttl=600)
+def fetch_news_brief_with_gemma(symbol: str, status_desc: str) -> str:
+    """使用 Gemini API 的 gemma-4-31b-it 模型對個股近期新聞進行整合摘要與深度分析。"""
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            return "（無法生成新聞分析：Google API Key 未設定）"
+        
+        # 獲取 Yahoo Finance 原始新聞標題
+        raw_news = fetch_stock_news(symbol, max_items=10)
+        if "暫無最新新聞" in raw_news or "失敗" in raw_news:
+            return "（暫無最新相關市場新聞）"
+            
+        client = genai.Client(api_key=api_key)
+        prompt = f"""
+        你是一位專業的資深美股/台股市場分析師。
+        請針對以下提供的個股【{symbol}】最新市場數據以及 Yahoo Finance 新聞標題，進行一次結構化、專業且精煉的繁體中文投資分析與新聞摘要。
+        
+        【最新股票數據】：
+        {status_desc}
+        
+        【最新市場新聞標題】：
+        {raw_news}
+        
+        【要求】：
+        1. 歸納出近期市場對該個股最關注的 2-3 個核心話題或事件（例如：財報表現、產品創新、資金流向或行業利空利多）。
+        2. 分析這些新聞事件與目前股價/數據之間的潛在關聯性或市場情緒。
+        3. 請以精煉的繁體中文條列式呈現，總字數控制在 250-400 字以內，語氣要客觀、專業、有洞察力。
+        """
+        response = client.models.generate_content(
+            model="gemma-4-31b-it",
+            contents=prompt
+        )
+        if response.text:
+            return response.text.strip()
+        return "（無法生成新聞分析：模型未回傳內容）"
+    except Exception as e:
+        return f"（Gemma 4 新聞分析生成失敗: {str(e)}）"
+
+
+def call_expert_chat(provider, model_name, system_prompt, history, symbol="", news_brief=""):
     """Non-streaming fallback: returns full response as string."""
     from google.genai import types as genai_types
     try:
+        enriched_prompt = system_prompt
+        if news_brief:
+            enriched_prompt += f"\n\n【最新市場新聞分析簡報（來自 Gemma 4，請務必參考）】：\n{news_brief}"
+
         if provider == 'Google':
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key: return "Google API Key 未設定"
@@ -635,13 +679,10 @@ def call_expert_chat(provider, model_name, system_prompt, history, symbol=""):
                 role = 'user' if msg['role'] == 'user' else 'model'
                 text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 contents.append({'role': role, 'parts': [{'text': text}]})
-            # 啟用 Google Search 聯網搜尋工具
-            search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
             response = client.models.generate_content(
                 model=model_name, contents=contents,
                 config=genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=[search_tool]
+                    system_instruction=enriched_prompt
                 )
             )
             return response.text
@@ -654,9 +695,6 @@ def call_expert_chat(provider, model_name, system_prompt, history, symbol=""):
                 api_key = st.secrets.get("OPENROUTER_API_KEY")
                 base_url = "https://openrouter.ai/api/v1"
             if not api_key: return f"{provider} API Key 未設定"
-            # 預抓最新新聞注入 system prompt
-            news_text = fetch_stock_news(symbol) if symbol else "（未指定股票代號）"
-            enriched_prompt = system_prompt + f"\n\n【最新市場新聞（來自 Yahoo Finance）】：\n{news_text}"
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
             messages = [{"role": "system", "content": enriched_prompt}]
             for msg in history:
@@ -669,13 +707,16 @@ def call_expert_chat(provider, model_name, system_prompt, history, symbol=""):
     return "未知的 Provider"
 
 
-def stream_expert_chat(provider, model_name, system_prompt, history, symbol=""):
+def stream_expert_chat(provider, model_name, system_prompt, history, symbol="", news_brief=""):
     """Streaming version: yields text chunks so st.write_stream() can render in real time.
-    - Google (Gemini): uses native google_search grounding tool for real-time web search.
-    - Nvidia / OpenRouter: pre-fetches latest Yahoo Finance news and injects into system prompt.
+    - Uses pre-fetched Gemma 4 news brief injected into the system prompt.
     """
     from google.genai import types as genai_types
     try:
+        enriched_prompt = system_prompt
+        if news_brief:
+            enriched_prompt += f"\n\n【最新市場新聞分析簡報（來自 Gemma 4，請務必參考）】：\n{news_brief}"
+
         if provider == 'Google':
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
@@ -686,13 +727,10 @@ def stream_expert_chat(provider, model_name, system_prompt, history, symbol=""):
                 role = 'user' if msg['role'] == 'user' else 'model'
                 text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
                 contents.append({'role': role, 'parts': [{'text': text}]})
-            # 啟用 Google Search 聯網搜尋工具（Gemini 會自動決定何時搜尋）
-            search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
             for chunk in client.models.generate_content_stream(
                 model=model_name, contents=contents,
                 config=genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=[search_tool]
+                    system_instruction=enriched_prompt
                 )
             ):
                 if chunk.text:
@@ -707,9 +745,6 @@ def stream_expert_chat(provider, model_name, system_prompt, history, symbol=""):
                 base_url = "https://openrouter.ai/api/v1"
             if not api_key:
                 yield f"{provider} API Key 未設定"; return
-            # 預抓最新新聞注入 system prompt，補強模型的即時資訊
-            news_text = fetch_stock_news(symbol) if symbol else "（未指定股票代號）"
-            enriched_prompt = system_prompt + f"\n\n【最新市場新聞（來自 Yahoo Finance，請務必參考）】：\n{news_text}"
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
             messages = [{"role": "system", "content": enriched_prompt}]
             for msg in history:
@@ -1416,7 +1451,11 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         "model": "User"
                     })
                     
-                    # B. 依次呼叫被選取專家的 API，使用 streaming 讓每位專家邊想邊顯示
+                    # B. 統一獲取最新新聞與 Gemma 4 的分析簡報 (單次調用共享)
+                    with st.spinner("📰 正在使用 Google Gemma 4 進行即時聯網新聞分析與深度彙整..."):
+                        news_brief = fetch_news_brief_with_gemma(final_symbol, status_desc)
+
+                    # C. 依次呼叫被選取專家的 API，使用 streaming 讓每位專家邊想邊顯示
                     for active_cfg in active_experts:
                         expert_name = active_cfg["name"]
                         
@@ -1438,7 +1477,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         
                         # 即時串流顯示該專家的回覆
                         expert_avatar = {"巴菲特價值專員": "🎩", "凱薩琳科技女皇": "👑", "索羅斯總經獵手": "🦅"}.get(expert_name, "🤖")
-                        search_badge = "🔍 Google Search" if active_cfg["provider"] == "Google" else "📰 Yahoo Finance 新聞"
+                        search_badge = "📰 Gemma 4 新聞分析"
                         with st.chat_message("assistant", avatar=expert_avatar):
                             st.markdown(f"**{expert_name}** *({active_cfg['model']})* &nbsp; `{search_badge}`")
                             # write_stream 接收 generator，邊產生 token 邊渲染，並回傳完整字串
@@ -1448,7 +1487,8 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                                     model_name=active_cfg["model"],
                                     system_prompt=system_instruction,
                                     history=st.session_state[f"expert_chat_history_{final_symbol}"],
-                                    symbol=final_symbol
+                                    symbol=final_symbol,
+                                    news_brief=news_brief
                                 )
                             )
                         
