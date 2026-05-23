@@ -10,6 +10,7 @@ from groq import Groq
 import requests
 from bs4 import BeautifulSoup
 import openai
+from utils.google_drive import is_logged_in, load_expert_config_from_drive, save_expert_config_to_drive
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="股票大師：個股深度解析", layout="wide", page_icon="🔍")
@@ -1119,6 +1120,46 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     else:
                         st.warning(deb_groq)
 
+def update_dynamic_questions(final_symbol, history, status_desc):
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        return
+    try:
+        client = genai.Client(api_key=api_key)
+        recent_history = history[-4:] if len(history) >= 4 else history
+        history_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in recent_history])
+        
+        prompt = f"""
+        請擔任頂尖的投資顧問。根據以下股票數據與最近的專家討論內容，產生 3 個最值得深入探討的後續追問問題。
+        
+        【股票數據】：
+        {status_desc}
+        
+        【最近對話】：
+        {history_text}
+        
+        【要求】：
+        1. 必須是繁體中文。
+        2. 問題要簡潔犀利，每條問題字數控制在 30 字以內，極具探討價值。
+        3. 回傳格式「必須」為純 JSON 陣列，例如：
+        ["問題一", "問題二", "問題三"]
+        不要有任何 Markdown 標籤 (例如 ```json) 或其他文字！
+        """
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.replace("```json", "").replace("```", "").strip()
+        
+        import json
+        questions = json.loads(text)
+        if isinstance(questions, list) and len(questions) >= 3:
+            st.session_state[f"dynamic_questions_{final_symbol}"] = questions[:3]
+    except Exception as e:
+        pass
+
         with tab6:
             st.markdown(f"### 💬 {final_symbol} AI 專家聯合會診")
             st.markdown("在這裡，您可以同時與多位不同模型設定的 AI 投資專家針對該股進行深度探討。每一位專家都能看到討論串中其他專家的意見，進行交談與辯論。")
@@ -1133,6 +1174,15 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     {"name": "凱薩琳科技女皇", "provider": "Nvidia", "model": "meta/llama-3.3-70b-instruct"},
                     {"name": "索羅斯總經獵手", "provider": "OpenRouter", "model": "meta-llama/llama-3-70b-instruct"}
                 ]
+                
+            # --- 1.1 從 Google Drive 載入專家設定 (若已登入且尚未載入) ---
+            if is_logged_in() and "expert_configs_loaded_from_drive" not in st.session_state:
+                with st.spinner("⏳ 正在從 Google Drive 讀取您的專家設定..."):
+                    drive_configs = load_expert_config_from_drive()
+                    if drive_configs and isinstance(drive_configs, list) and len(drive_configs) == 3:
+                        st.session_state["expert_configs"] = drive_configs
+                        st.toast("📅 已成功從 Google Drive 套用您的專屬專家設定！", icon="📅")
+                    st.session_state["expert_configs_loaded_from_drive"] = True
                 
             # --- 2. 專家設定面板 ---
             with st.expander("⚙️ 專家陣容與模型配置", expanded=False):
@@ -1166,7 +1216,16 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 
                 if st.button("💾 儲存並套用專家設定"):
                     st.session_state["expert_configs"] = updated_configs
-                    st.toast("✅ 專家配置已更新！", icon="💾")
+                    if is_logged_in():
+                        with st.spinner("💾 正在同步設定至 Google Drive..."):
+                            success = save_expert_config_to_drive(updated_configs)
+                            if success:
+                                st.toast("✅ 專家配置已更新並儲存至 Google Drive！", icon="💾")
+                            else:
+                                st.toast("⚠️ 儲存至 Google Drive 失敗，但已在本地生效。", icon="⚠️")
+                    else:
+                        st.toast("✅ 專家配置已在本地生效！(登入 Google 帳號可永久保存設定)", icon="💾")
+                    st.rerun()
             
             # --- 3. 渲染對話紀錄 ---
             st.markdown("---")
@@ -1174,16 +1233,14 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             
             with chat_container:
                 if not st.session_state[f"expert_chat_history_{final_symbol}"]:
-                    st.info("💡 聊天室目前空空如也。在下方輸入問題，並選擇一位專家來開啟對話吧！")
+                    st.info("💡 聊天室目前空空如也。在下方輸入問題，並點選專家來開啟對話吧！")
                 else:
                     for msg in st.session_state[f"expert_chat_history_{final_symbol}"]:
                         if msg["role"] == "user":
                             with st.chat_message("user", avatar="👤"):
                                 st.markdown(f"**您**：{msg['content']}")
                         else:
-                            # 幫不同專家分配不同的色彩外觀
                             expert_colors = {0: "blue", 1: "green", 2: "orange"}
-                            # 找出這個專家是第幾位
                             exp_idx = 0
                             for idx, cfg in enumerate(st.session_state["expert_configs"]):
                                 if cfg["name"] == msg["name"]:
@@ -1214,78 +1271,117 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             - 量能狀態: {tech_status.get('volume', ('未知',))[0]}
             """
             
-            # 讓使用者可以選擇由哪一位專家回答，或者接續發表看法
             expert_options = [cfg["name"] for cfg in st.session_state["expert_configs"]]
             
-            col_input, col_sel = st.columns([4, 1])
-            with col_sel:
-                active_expert_name = st.selectbox("指定發言專家", expert_options, key="active_expert")
-                
-            # 取得當前所選專家的配置
-            active_cfg = next(cfg for cfg in st.session_state["expert_configs"] if cfg["name"] == active_expert_name)
+            # 1. 專家選取區（多選）
+            st.write("🗣️ **指定發言專家（可複選）**：")
+            col_e1, col_e2, col_e3 = st.columns(3)
             
-            # 提供快速問題推薦
-            st.write("💡 快速推薦問題：")
-            q_cols = st.columns(3)
-            quick_q = ""
-            if q_cols[0].button("📉 該股近期是否有破線危機？", use_container_width=True):
-                quick_q = "從技術面來看，這檔股票近期有跌破均線或支撐點的風險嗎？您會建議怎麼佈局？"
-            if q_cols[1].button("💰 這檔股票目前估值合理嗎？", use_container_width=True):
-                quick_q = "根據目前的股價與基本面，您認為現在的估值合理嗎？是否有足夠的安全邊際？"
-            if q_cols[2].button("📢 針對前一位專家的看法，你怎麼看？", use_container_width=True):
-                quick_q = "請問你贊同前一位專家剛剛提出的論點與策略嗎？你有沒有看到他忽略的盲點或風險？"
+            if "selected_speakers" not in st.session_state:
+                st.session_state["selected_speakers"] = [True, False, False]
                 
-            user_question = st.text_input("輸入您的問題：", value=quick_q if quick_q else "", placeholder="請輸入問題或追問內容...", key="user_question_input")
+            with col_e1:
+                e1 = st.checkbox(f"👨‍💼 {expert_options[0]}", value=st.session_state["selected_speakers"][0], key="cb_exp_0")
+            with col_e2:
+                e2 = st.checkbox(f"👩‍💼 {expert_options[1]}", value=st.session_state["selected_speakers"][1], key="cb_exp_1")
+            with col_e3:
+                e3 = st.checkbox(f"🕵️‍♂️ {expert_options[2]}", value=st.session_state["selected_speakers"][2], key="cb_exp_2")
+                
+            st.session_state["selected_speakers"] = [e1, e2, e3]
+            active_experts = [st.session_state["expert_configs"][i] for i, sel in enumerate(st.session_state["selected_speakers"]) if sel]
+            
+            # 2. 快速推薦問題按鈕帶入
+            if "query_input_val" not in st.session_state:
+                st.session_state["query_input_val"] = ""
+                
+            if f"dynamic_questions_{final_symbol}" not in st.session_state:
+                st.session_state[f"dynamic_questions_{final_symbol}"] = [
+                    "從技術面來看，這檔股票近期有跌破均線或支撐點的風險嗎？您會建議怎麼佈局？",
+                    "根據目前的股價與基本面，您認為現在的估值合理嗎？是否有足夠的安全邊際？",
+                    "請問你贊同前一位專家剛剛提出的論點與策略嗎？你有沒有看到他忽略的盲點或風險？"
+                ]
+                
+            st.write("💡 **快速推薦問題**（點選後自動帶入輸入框）：")
+            q_cols = st.columns(3)
+            dyn_qs = st.session_state[f"dynamic_questions_{final_symbol}"]
+            
+            for col_i, q_text in enumerate(dyn_qs):
+                label = q_text[:15] + "..." if len(q_text) > 15 else q_text
+                if col_i == 0: label = "📉 " + label
+                elif col_i == 1: label = "💰 " + label
+                else: label = "🗣️ " + label
+                
+                with q_cols[col_i]:
+                    if st.button(label, key=f"rec_btn_{col_i}", use_container_width=True):
+                        st.session_state["query_input_val"] = q_text
+                        st.rerun()
+            
+            # 3. 對話輸入文字框
+            user_question = st.text_input("輸入您的問題：", value=st.session_state.get("query_input_val", ""), placeholder="請輸入問題或追問內容...", key="user_question_input")
             
             col_btn1, col_btn2, _ = st.columns([1, 1, 3])
-            
             submit_clicked = col_btn1.button("📤 送出提問與會診", use_container_width=True)
             clear_clicked = col_btn2.button("🗑️ 清除聊天紀錄", use_container_width=True)
             
             if clear_clicked:
                 st.session_state[f"expert_chat_history_{final_symbol}"] = []
+                st.session_state.pop("query_input_val", None)
                 st.rerun()
                 
             if submit_clicked and user_question.strip():
-                # 1. 將使用者問題加入歷史
-                st.session_state[f"expert_chat_history_{final_symbol}"].append({
-                    "role": "user",
-                    "name": "User",
-                    "content": user_question.strip(),
-                    "model": "User"
-                })
-                
-                # 2. 準備給 AI 的 System Prompt
-                system_instruction = f"""
-                你現在是投資大師「{active_expert_name}」。你目前正在參與一場針對【{final_symbol}】的線上圓桌投資研討會。
-                你的性格與分析流派為：
-                - 巴菲特價值專員：非常注重基本面、本益比、護城河與安全邊際，語氣沉穩保守。
-                - 凱薩琳科技女皇：極度熱愛破壞性創新、AI與未來大趨勢，語氣樂觀犀利，能承受高波動。
-                - 索羅斯總經獵手：著重於全球資金流向、反射性理論、技術分析背離、量價結構與投機反轉點，語氣冷靜且投機。
-                
-                【最新股票數據】：
-                {status_desc}
-                
-                【任務說明】：
-                1. 請嚴格根據上述的流派人設，對使用者或前面專家提出的問題給出 analysis。
-                2. 討論串中可能包含其他專家的發言（格式為 `[專家名字] 說：...` 或類似脈絡）。你**絕對必須**看清前面的討論，並針對前面的論點進行有理有據的贊同、反駁或補充！
-                3. 請用精煉且有說服力的繁體中文回答，語氣要活生生像個獨立的專家。
-                """
-                
-                # 3. 呼叫 API
-                with st.spinner(f"🕵️‍♂️ {active_expert_name} 正在思考並查閱數據中..."):
-                    ai_response = call_expert_chat(
-                        provider=active_cfg["provider"],
-                        model_name=active_cfg["model"],
-                        system_prompt=system_instruction,
-                        history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                if not active_experts:
+                    st.warning("⚠️ 請至少勾選一位發言專家！")
+                else:
+                    # A. 將使用者問題加入歷史
+                    st.session_state[f"expert_chat_history_{final_symbol}"].append({
+                        "role": "user",
+                        "name": "User",
+                        "content": user_question.strip(),
+                        "model": "User"
+                    })
+                    
+                    # B. 依次呼叫被選取專家的 API
+                    for active_cfg in active_experts:
+                        expert_name = active_cfg["name"]
+                        
+                        system_instruction = f"""
+                        你現在是投資大師「{expert_name}」。你目前正在參與一場針對【{final_symbol}】的線上圓桌投資研討會。
+                        你的性格與分析流派為：
+                        - 巴菲特價值專員：非常注重基本面、本益比、護城河與安全邊際，語氣沉穩保守。
+                        - 凱薩琳科技女皇：極度熱愛破壞性創新、AI與未來大趨勢，語氣樂觀犀利，能承受高波動。
+                        - 索羅斯總經獵手：著重於全球資金流向、反射性理論、技術分析背離、量價結構與投機反轉點，語氣冷靜且投機。
+                        
+                        【最新股票數據】：
+                        {status_desc}
+                        
+                        【任務說明】：
+                        1. 請嚴格根據上述的流派人設，對使用者或前面專家提出的問題給出分析。
+                        2. 討論串中可能包含其他專家的發言（格式為 `[專家名字] 說：...` 或類似脈絡）。你**絕對必須**看清前面的討論，並針對前面的論點進行有理有據的贊同、反駁或補充！
+                        3. 請用精煉且有說服力的繁體中文回答，語氣要活生生像個獨立的專家。
+                        """
+                        
+                        with st.spinner(f"🕵️‍♂️ {expert_name} 正在思考並研判數據中..."):
+                            ai_response = call_expert_chat(
+                                provider=active_cfg["provider"],
+                                model_name=active_cfg["model"],
+                                system_prompt=system_instruction,
+                                history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                            )
+                        
+                        st.session_state[f"expert_chat_history_{final_symbol}"].append({
+                            "role": "assistant",
+                            "name": expert_name,
+                            "content": ai_response,
+                            "model": active_cfg["model"]
+                        })
+                    
+                    # C. 更新推薦問題
+                    update_dynamic_questions(
+                        final_symbol,
+                        st.session_state[f"expert_chat_history_{final_symbol}"],
+                        status_desc
                     )
-                
-                # 4. 將專家回答加入歷史
-                st.session_state[f"expert_chat_history_{final_symbol}"].append({
-                    "role": "assistant",
-                    "name": active_expert_name,
-                    "content": ai_response,
-                    "model": active_cfg["model"]
-                })
-                st.rerun()
+                    
+                    # D. 清空輸入字串暫存
+                    st.session_state["query_input_val"] = ""
+                    st.rerun()

@@ -249,3 +249,71 @@ def logout():
     """清除所有 Google 登入資訊"""
     for key in ["google_creds", "google_user_email", "oauth_state", "google_auth_error"]:
         st.session_state.pop(key, None)
+
+
+EXPERT_CONFIG_FILENAME = "stock_master_expert_config.json"
+
+def _find_expert_config_file(service):
+    """在 Drive 中搜尋專家設定檔案，回傳 file_id 或 None"""
+    query = f"name='{EXPERT_CONFIG_FILENAME}' and trashed=false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def load_expert_config_from_drive():
+    """
+    從 Google Drive 讀取專家設定 JSON。
+    成功回傳 list/dict，失敗或不存在回傳 None。
+    """
+    service = _get_drive_service()
+    if not service:
+        return None
+
+    try:
+        file_id = _find_expert_config_file(service)
+        if not file_id:
+            return None  # 檔案不存在
+
+        request = service.files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buffer.seek(0)
+        return json.loads(buffer.read().decode("utf-8").strip())
+    except Exception as e:
+        st.warning(f"⚠️ 從 Google Drive 讀取專家設定失敗：{e}")
+        return None
+
+
+def save_expert_config_to_drive(config_data):
+    """
+    將專家設定寫入 Google Drive。
+    成功回傳 True，失敗回傳 False。
+    """
+    service = _get_drive_service()
+    if not service:
+        return False
+
+    try:
+        file_metadata = {"name": EXPERT_CONFIG_FILENAME, "mimeType": "application/json"}
+        content = json.dumps(config_data, ensure_ascii=False, indent=2).encode("utf-8")
+        media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/json")
+
+        file_id = _find_expert_config_file(service)
+        if file_id:
+            # 更新現有檔案
+            service.files().update(
+                fileId=file_id, media_body=media
+            ).execute()
+        else:
+            # 建立新檔案
+            service.files().create(
+                body=file_metadata, media_body=media, fields="id"
+            ).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ 寫入 Google Drive 專家設定失敗：{e}")
+        return False
