@@ -9,6 +9,7 @@ from google import genai
 from groq import Groq
 import requests
 from bs4 import BeautifulSoup
+import openai
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="股票大師：個股深度解析", layout="wide", page_icon="🔍")
@@ -193,7 +194,47 @@ def add_indicators(df):
     
     return df
 
-# --- 5. 技術面視覺化輔助函式 ---
+# --- 5. 動態模型獲取 ---
+@st.cache_data(ttl=3600)
+def fetch_google_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["請先設定 API Key"]
+        client = genai.Client(api_key=api_key)
+        models = []
+        for m in client.models.list():
+            if "gemini" in m.name and "vision" not in m.name: # Filter basic ones
+                models.append(m.name)
+        # Ensure some defaults if API doesn't return cleanly or returns too many
+        default_list = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
+        for d in default_list:
+            if d not in models:
+                models.insert(0, d)
+        return models[:20]
+    except Exception as e:
+        return ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"]
+
+@st.cache_data(ttl=3600)
+def fetch_nvidia_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["請先設定 API Key"]
+        client = openai.OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
+        models = client.models.list()
+        return sorted([m.id for m in models.data])
+    except Exception as e:
+        return ["meta/llama-3.3-70b-instruct", "mistralai/mistral-large-2-instruct"]
+
+@st.cache_data(ttl=3600)
+def fetch_openrouter_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["請先設定 API Key"]
+        client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+        models = client.models.list()
+        # OpenRouter returns hundreds, maybe just sort and return
+        return sorted([m.id for m in models.data])
+    except Exception as e:
+        return ["anthropic/claude-3.5-sonnet", "openai/gpt-4o", "meta-llama/llama-3-70b-instruct"]
+
+# --- 6. 技術面視覺化輔助函式 ---
 
 def get_tech_status(df):
     """分析近期資料，回傳各指標狀態字典"""
@@ -554,6 +595,64 @@ def call_ai(model_type, prompt):
         return f"AI 忙碌中或發生錯誤: {str(e)}"
     return "未知的模型類型"
 
+
+def call_expert_chat(provider, model_name, system_prompt, history):
+    # provider: 'Google', 'Nvidia', 'OpenRouter'
+    try:
+        if provider == 'Google':
+            api_key = st.secrets.get("GEMINI_API_KEY")
+            if not api_key: return "Google API Key 未設定"
+            client = genai.Client(api_key=api_key)
+            
+            contents = []
+            for msg in history:
+                role = 'user' if msg['role'] == 'user' else 'model'
+                text = f"{msg['name']}說：{msg['content']}" if msg['role'] == 'assistant' else msg['content']
+                contents.append({'role': role, 'parts': [{'text': text}]})
+            
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config={'system_instruction': system_prompt}
+            )
+            return response.text
+
+        elif provider == 'Nvidia':
+            api_key = st.secrets.get("NVIDIA_API_KEY")
+            if not api_key: return "Nvidia API Key 未設定"
+            client = openai.OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in history:
+                text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
+                messages.append({"role": msg['role'], "content": text})
+            
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages
+            )
+            return response.choices[0].message.content
+
+        elif provider == 'OpenRouter':
+            api_key = st.secrets.get("OPENROUTER_API_KEY")
+            if not api_key: return "OpenRouter API Key 未設定"
+            client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in history:
+                text = f"[{msg['name']}] {msg['content']}" if msg['role'] == 'assistant' else msg['content']
+                messages.append({"role": msg['role'], "content": text})
+                
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages
+            )
+            return response.choices[0].message.content
+            
+    except Exception as e:
+        return f"API 呼叫失敗: {str(e)}"
+    return "未知的 Provider"
+
 # --- 6. 主程式 ---
 if run_btn or auto_run:
     st.session_state['show_analysis_page'] = True
@@ -694,7 +793,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 
                 st.success("✅ 四大分析報告已全面生成完畢！請直接點擊下方各分頁查看結果。")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議", "🏛️ 基本面分析", "📰 市場情緒分析", "🗣️ AI 多空辯論"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 技術分析圖表", "🤖 AI 操盤建議", "🏛️ 基本面分析", "📰 市場情緒分析", "🗣️ AI 多空辯論", "💬 專家聯合會診"])
         
         with tab1:
             # --- 技術面總覽儀表板 ---
@@ -936,6 +1035,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         st.warning(sent_groq)
 
         with tab5:
+            pass
             st.markdown(f"### 🗣️ {final_symbol} AI 多空辯論")
             st.markdown("讓 AI 同時扮演**成長型主管**、**價值型老手**、以及**惡意做空機構**，展開精彩的投資辯論大會！")
             
@@ -1018,3 +1118,172 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         st.error(deb_groq)
                     else:
                         st.warning(deb_groq)
+
+        with tab6:
+            st.markdown(f"### 💬 {final_symbol} AI 專家聯合會診")
+            st.markdown("在這裡，您可以同時與多位不同模型設定的 AI 投資專家針對該股進行深度探討。每一位專家都能看到討論串中其他專家的意見，進行交談與辯論。")
+            
+            # --- 1. 初始化 Session State ---
+            if f"expert_chat_history_{final_symbol}" not in st.session_state:
+                st.session_state[f"expert_chat_history_{final_symbol}"] = []
+                
+            if "expert_configs" not in st.session_state:
+                st.session_state["expert_configs"] = [
+                    {"name": "巴菲特價值專員", "provider": "Google", "model": "gemini-2.5-flash"},
+                    {"name": "凱薩琳科技女皇", "provider": "Nvidia", "model": "meta/llama-3.3-70b-instruct"},
+                    {"name": "索羅斯總經獵手", "provider": "OpenRouter", "model": "meta-llama/llama-3-70b-instruct"}
+                ]
+                
+            # --- 2. 專家設定面板 ---
+            with st.expander("⚙️ 專家陣容與模型配置", expanded=False):
+                st.markdown("您可以配置最多 3 位專家，並為每位專家指定名稱、API 供應商及特定的 AI 模型：")
+                
+                cols = st.columns(3)
+                updated_configs = []
+                for idx in range(3):
+                    with cols[idx]:
+                        st.markdown(f"#### 👤 專家 {idx+1}")
+                        cfg = st.session_state["expert_configs"][idx] if idx < len(st.session_state["expert_configs"]) else {"name": f"AI專家 {idx+1}", "provider": "Google", "model": ""}
+                        
+                        exp_name = st.text_input(f"名稱", value=cfg["name"], key=f"exp_name_{idx}")
+                        provider = st.selectbox(f"API 供應商", ["Google", "Nvidia", "OpenRouter"], index=["Google", "Nvidia", "OpenRouter"].index(cfg["provider"]) if cfg["provider"] in ["Google", "Nvidia", "OpenRouter"] else 0, key=f"exp_provider_{idx}")
+                        
+                        # 根據 provider 動態獲取模型
+                        if provider == "Google":
+                            models = fetch_google_models(st.secrets.get("GEMINI_API_KEY"))
+                        elif provider == "Nvidia":
+                            models = fetch_nvidia_models(st.secrets.get("NVIDIA_API_KEY"))
+                        else:
+                            models = fetch_openrouter_models(st.secrets.get("OPENROUTER_API_KEY"))
+                            
+                        # 選擇模型
+                        default_model = cfg["model"]
+                        if default_model not in models:
+                            default_model = models[0] if models else ""
+                        
+                        model = st.selectbox(f"模型", models, index=models.index(default_model) if default_model in models else 0, key=f"exp_model_{idx}")
+                        updated_configs.append({"name": exp_name, "provider": provider, "model": model})
+                
+                if st.button("💾 儲存並套用專家設定"):
+                    st.session_state["expert_configs"] = updated_configs
+                    st.toast("✅ 專家配置已更新！", icon="💾")
+            
+            # --- 3. 渲染對話紀錄 ---
+            st.markdown("---")
+            chat_container = st.container()
+            
+            with chat_container:
+                if not st.session_state[f"expert_chat_history_{final_symbol}"]:
+                    st.info("💡 聊天室目前空空如也。在下方輸入問題，並選擇一位專家來開啟對話吧！")
+                else:
+                    for msg in st.session_state[f"expert_chat_history_{final_symbol}"]:
+                        if msg["role"] == "user":
+                            with st.chat_message("user", avatar="👤"):
+                                st.markdown(f"**您**：{msg['content']}")
+                        else:
+                            # 幫不同專家分配不同的色彩外觀
+                            expert_colors = {0: "blue", 1: "green", 2: "orange"}
+                            # 找出這個專家是第幾位
+                            exp_idx = 0
+                            for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                                if cfg["name"] == msg["name"]:
+                                    exp_idx = idx
+                                    break
+                            
+                            color = expert_colors.get(exp_idx, "grey")
+                            avatar_emoji = ["👨‍💼", "👩‍💼", "🕵️‍♂️"][exp_idx % 3]
+                            
+                            with st.chat_message("assistant", avatar=avatar_emoji):
+                                st.markdown(f"### {avatar_emoji} {msg['name']} ({msg['model']})")
+                                st.markdown(msg["content"])
+                                
+            # --- 4. 對話輸入區 ---
+            st.markdown("---")
+            
+            # 準備系統背景 prompt，包含個股財報與技術指標數據
+            tech_status = get_tech_status(df)
+            status_desc = f"""
+            分析股票標的：{final_symbol}
+            目前最新價格：{last['Close']}
+            技術面狀態：
+            - MA5: {last['MA5']:.2f}, MA20: {last['MA20']:.2f}, MA60: {last['MA60']:.2f}
+            - RSI5: {last['RSI5']:.2f}, RSI10: {last['RSI10']:.2f}
+            - KD交叉狀態: {tech_status.get('kd_status', '未知')}
+            - MACD柱狀體: {last['MACD_Hist']:.4f}
+            """
+            
+            # 讓使用者可以選擇由哪一位專家回答，或者接續發表看法
+            expert_options = [cfg["name"] for cfg in st.session_state["expert_configs"]]
+            
+            col_input, col_sel = st.columns([4, 1])
+            with col_sel:
+                active_expert_name = st.selectbox("指定發言專家", expert_options, key="active_expert")
+                
+            # 取得當前所選專家的配置
+            active_cfg = next(cfg for cfg in st.session_state["expert_configs"] if cfg["name"] == active_expert_name)
+            
+            # 提供快速問題推薦
+            st.write("💡 快速推薦問題：")
+            q_cols = st.columns(3)
+            quick_q = ""
+            if q_cols[0].button("📉 該股近期是否有破線危機？", use_container_width=True):
+                quick_q = "從技術面來看，這檔股票近期有跌破均線或支撐點的風險嗎？您會建議怎麼佈局？"
+            if q_cols[1].button("💰 這檔股票目前估值合理嗎？", use_container_width=True):
+                quick_q = "根據目前的股價與基本面，您認為現在的估值合理嗎？是否有足夠的安全邊際？"
+            if q_cols[2].button("📢 針對前一位專家的看法，你怎麼看？", use_container_width=True):
+                quick_q = "請問你贊同前一位專家剛剛提出的論點與策略嗎？你有沒有看到他忽略的盲點或風險？"
+                
+            user_question = st.text_input("輸入您的問題：", value=quick_q if quick_q else "", placeholder="請輸入問題或追問內容...", key="user_question_input")
+            
+            col_btn1, col_btn2, _ = st.columns([1, 1, 3])
+            
+            submit_clicked = col_btn1.button("📤 送出提問與會診", use_container_width=True)
+            clear_clicked = col_btn2.button("🗑️ 清除聊天紀錄", use_container_width=True)
+            
+            if clear_clicked:
+                st.session_state[f"expert_chat_history_{final_symbol}"] = []
+                st.rerun()
+                
+            if submit_clicked and user_question.strip():
+                # 1. 將使用者問題加入歷史
+                st.session_state[f"expert_chat_history_{final_symbol}"].append({
+                    "role": "user",
+                    "name": "User",
+                    "content": user_question.strip(),
+                    "model": "User"
+                })
+                
+                # 2. 準備給 AI 的 System Prompt
+                system_instruction = f"""
+                你現在是投資大師「{active_expert_name}」。你目前正在參與一場針對【{final_symbol}】的線上圓桌投資研討會。
+                你的性格與分析流派為：
+                - 巴菲特價值專員：非常注重基本面、本益比、護城河與安全邊際，語氣沉穩保守。
+                - 凱薩琳科技女皇：極度熱愛破壞性創新、AI與未來大趨勢，語氣樂觀犀利，能承受高波動。
+                - 索羅斯總經獵手：著重於全球資金流向、反射性理論、技術分析背離、量價結構與投機反轉點，語氣冷靜且投機。
+                
+                【最新股票數據】：
+                {status_desc}
+                
+                【任務說明】：
+                1. 請嚴格根據上述的流派人設，對使用者或前面專家提出的問題給出 analysis。
+                2. 討論串中可能包含其他專家的發言（格式為 `[專家名字] 說：...` 或類似脈絡）。你**絕對必須**看清前面的討論，並針對前面的論點進行有理有據的贊同、反駁或補充！
+                3. 請用精煉且有說服力的繁體中文回答，語氣要活生生像個獨立的專家。
+                """
+                
+                # 3. 呼叫 API
+                with st.spinner(f"🕵️‍♂️ {active_expert_name} 正在思考並查閱數據中..."):
+                    ai_response = call_expert_chat(
+                        provider=active_cfg["provider"],
+                        model_name=active_cfg["model"],
+                        system_prompt=system_instruction,
+                        history=st.session_state[f"expert_chat_history_{final_symbol}"]
+                    )
+                
+                # 4. 將專家回答加入歷史
+                st.session_state[f"expert_chat_history_{final_symbol}"].append({
+                    "role": "assistant",
+                    "name": active_expert_name,
+                    "content": ai_response,
+                    "model": active_cfg["model"]
+                })
+                st.rerun()
