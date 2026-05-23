@@ -4,6 +4,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from google import genai
+import openai
 from datetime import datetime, timedelta
 import sys
 import os
@@ -108,17 +109,80 @@ st.sidebar.divider()
 
 # --- AI 模型選擇 ---
 st.sidebar.subheader("🧠 AI 模型引擎")
-model_map = {
-    "🔥 最新深度旗艦版 (Gemini 3.1 Pro)": "gemini-3.1-pro-preview",
-    "🚀 最新極速版 (Gemini 3.0 Flash)": "gemini-3-flash-preview",
-    "⚡ 穩定極速版 (Gemini 2.5 Flash)": "gemini-2.5-flash",
-    "🧠 最新深度版 (Gemini 2.5 Pro)": "gemini-2.5-pro",
-    "⚡ 穩定極速版 (Gemini 2.0 Flash)": "gemini-2.0-flash",
-    "🎁 驚喜自動升級版 (gemini-flash-latest)": "gemini-flash-latest",
-}
-selected_label = st.sidebar.selectbox("選擇分析大腦", list(model_map.keys()), index=0)
-model_name = model_map[selected_label]
-st.session_state['selected_gemini_model'] = model_name
+
+# 動態模型獲取函數
+@st.cache_data(ttl=3600)
+def _home_fetch_google_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview"]
+        client = genai.Client(api_key=api_key)
+        models = []
+        for m in client.models.list():
+            if "gemini" in m.name and "vision" not in m.name:
+                models.append(m.name)
+        default_list = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"]
+        for d in default_list:
+            if d not in models:
+                models.insert(0, d)
+        return models[:20]
+    except Exception:
+        return ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"]
+
+@st.cache_data(ttl=3600)
+def _home_fetch_nvidia_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["meta/llama-3.3-70b-instruct", "mistralai/mistral-large-2-instruct"]
+        client = openai.OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
+        models = client.models.list()
+        return sorted([m.id for m in models.data])
+    except Exception:
+        return ["meta/llama-3.3-70b-instruct", "mistralai/mistral-large-2-instruct"]
+
+@st.cache_data(ttl=3600)
+def _home_fetch_openrouter_models(api_key):
+    try:
+        if not api_key or api_key.startswith("請輸入"): return ["meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"]
+        client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+        models = client.models.list()
+        free_models = sorted([m.id for m in models.data if "free" in m.id.lower()])
+        return free_models if free_models else ["meta-llama/llama-3.1-8b-instruct:free"]
+    except Exception:
+        return ["meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"]
+
+provider_options = ["Google (Gemini)", "Nvidia", "OpenRouter"]
+prev_provider = st.session_state.get("home_ai_provider", "Google (Gemini)")
+selected_provider_label = st.sidebar.selectbox(
+    "🏢 選擇 API 供應商",
+    provider_options,
+    index=provider_options.index(prev_provider) if prev_provider in provider_options else 0,
+    key="home_provider_selectbox"
+)
+st.session_state["home_ai_provider"] = selected_provider_label
+
+# 根據供應商載入模型清單
+if selected_provider_label == "Google (Gemini)":
+    _provider_key = "Google"
+    _model_list = _home_fetch_google_models(st.secrets.get("GEMINI_API_KEY"))
+elif selected_provider_label == "Nvidia":
+    _provider_key = "Nvidia"
+    _model_list = _home_fetch_nvidia_models(st.secrets.get("NVIDIA_API_KEY"))
+else:
+    _provider_key = "OpenRouter"
+    _model_list = _home_fetch_openrouter_models(st.secrets.get("OPENROUTER_API_KEY"))
+
+# 若切換供應商，重置 model 選擇
+if st.session_state.get("home_ai_provider_prev") != selected_provider_label:
+    st.session_state.pop("home_model_selectbox", None)
+st.session_state["home_ai_provider_prev"] = selected_provider_label
+
+_default_model = _model_list[0] if _model_list else ""
+model_name = st.sidebar.selectbox(
+    "🧠 選擇分析大腦",
+    _model_list,
+    key="home_model_selectbox"
+)
+st.session_state["selected_gemini_model"] = model_name
+st.session_state["home_ai_provider_key"] = _provider_key
 
 # --- 觀察清單輸入 ---
 st.sidebar.subheader("📋 觀察清單")
@@ -191,13 +255,9 @@ def calculate_technical_indicators(df):
 
 
 # ===========================================================
-# Gemini AI 分析
+# AI 分析（支援多 Provider）
 # ===========================================================
-def get_gemini_analysis(df, model_id):
-    api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
-    if not api_key or api_key.startswith("請輸入"):
-        return "❌ 錯誤：找不到 API Key"
-
+def get_ai_analysis(df, provider, model_id):
     data_text = df.to_string(index=False)
     prompt = f"""
     現在是 2026 年，請擔任王牌操盤手。根據以下數據（含 RSI, MACD, KD, 量能）進行分析。
@@ -209,12 +269,35 @@ def get_gemini_analysis(df, model_id):
     使用繁體中文，專業犀利。
     """
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-        )
-        return response.text
+        if provider == "Google":
+            api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
+            if not api_key or api_key.startswith("請輸入"):
+                return "❌ 錯誤：找不到 GEMINI_API_KEY"
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model=model_id, contents=prompt)
+            return response.text
+        elif provider == "Nvidia":
+            api_key = st.secrets.get("NVIDIA_API_KEY")
+            if not api_key:
+                return "❌ 錯誤：找不到 NVIDIA_API_KEY"
+            client = openai.OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content
+        elif provider == "OpenRouter":
+            api_key = st.secrets.get("OPENROUTER_API_KEY")
+            if not api_key:
+                return "❌ 錯誤：找不到 OPENROUTER_API_KEY"
+            client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content
+        else:
+            return "❌ 錯誤：未知的供應商"
     except Exception as e:
         return f"AI 錯誤: {e}"
 
@@ -302,10 +385,13 @@ if user_input:
             st.switch_page("pages/1_個股深度解析.py")
 
         st.divider()
-        st.subheader("🤖 Gemini 戰情室")
-        if st.button("呼叫 AI 操盤手"):
-            with st.spinner(f'AI 分析中...'):
-                analysis_result = get_gemini_analysis(result_df, model_name)
+        _current_provider = st.session_state.get("home_ai_provider_key", "Google")
+        _provider_badge = {"Google": "🔵 Gemini", "Nvidia": "🟢 Nvidia", "OpenRouter": "🟡 OpenRouter"}.get(_current_provider, "🤖 AI")
+        st.subheader(f"🤖 {_provider_badge} 戰情室")
+        st.caption(f"目前使用模型：`{model_name}` （供應商：{_current_provider}）")
+        if st.button("呼叫 AI 操盤手", use_container_width=True):
+            with st.spinner(f'🧠 {_current_provider} AI 分析中，請稍候...'):
+                analysis_result = get_ai_analysis(result_df, _current_provider, model_name)
                 st.markdown(analysis_result)
     else:
         st.warning("查無數據。")
