@@ -654,6 +654,46 @@ def call_expert_chat(provider, model_name, system_prompt, history):
         return f"API 呼叫失敗: {str(e)}"
     return "未知的 Provider"
 
+def update_dynamic_questions(final_symbol, history, status_desc):
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        return
+    try:
+        client = genai.Client(api_key=api_key)
+        recent_history = history[-4:] if len(history) >= 4 else history
+        history_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in recent_history])
+        
+        prompt = f"""
+        請擔任頂尖的投資顧問。根據以下股票數據與最近的專家討論內容，產生 3 個最值得深入探討的後續追問問題。
+        
+        【股票數據】：
+        {status_desc}
+        
+        【最近對話】：
+        {history_text}
+        
+        【要求】：
+        1. 必須是繁體中文。
+        2. 問題要簡潔犀利，每條問題字數控制在 30 字以內，極具探討價值。
+        3. 回傳格式「必須」為純 JSON 陣列，例如：
+        ["問題一", "問題二", "問題三"]
+        不要有防 Markdown 標籤 (例如 ```json) 或其他文字！
+        """
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.replace("```json", "").replace("```", "").strip()
+        
+        import json
+        questions = json.loads(text)
+        if isinstance(questions, list) and len(questions) >= 3:
+            st.session_state[f"dynamic_questions_{final_symbol}"] = questions[:3]
+    except Exception as e:
+        pass
+
 # --- 6. 主程式 ---
 if run_btn or auto_run:
     st.session_state['show_analysis_page'] = True
@@ -1119,46 +1159,6 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         st.error(deb_groq)
                     else:
                         st.warning(deb_groq)
-
-def update_dynamic_questions(final_symbol, history, status_desc):
-    api_key = st.secrets.get("GEMINI_API_KEY")
-    if not api_key:
-        return
-    try:
-        client = genai.Client(api_key=api_key)
-        recent_history = history[-4:] if len(history) >= 4 else history
-        history_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in recent_history])
-        
-        prompt = f"""
-        請擔任頂尖的投資顧問。根據以下股票數據與最近的專家討論內容，產生 3 個最值得深入探討的後續追問問題。
-        
-        【股票數據】：
-        {status_desc}
-        
-        【最近對話】：
-        {history_text}
-        
-        【要求】：
-        1. 必須是繁體中文。
-        2. 問題要簡潔犀利，每條問題字數控制在 30 字以內，極具探討價值。
-        3. 回傳格式「必須」為純 JSON 陣列，例如：
-        ["問題一", "問題二", "問題三"]
-        不要有任何 Markdown 標籤 (例如 ```json) 或其他文字！
-        """
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        text = response.text.strip()
-        if text.startswith("```"):
-            text = text.replace("```json", "").replace("```", "").strip()
-        
-        import json
-        questions = json.loads(text)
-        if isinstance(questions, list) and len(questions) >= 3:
-            st.session_state[f"dynamic_questions_{final_symbol}"] = questions[:3]
-    except Exception as e:
-        pass
 
         with tab6:
             st.markdown(f"### 💬 {final_symbol} AI 專家聯合會診")
