@@ -1421,6 +1421,8 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     )
                     
                     # D. 清空輸入字串暫存
+                    # 注意：不能在 widget 渲染後直接 set 其 key（會觸發 StreamlitAPIException）
+                    # 改用 pop 移除 widget key，讓 st.rerun() 時 text_input 以空白初始化
                     st.session_state["query_input_val"] = ""
-                    st.session_state["user_question_input"] = ""
+                    st.session_state.pop("user_question_input", None)
                     st.rerun()
