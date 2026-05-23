@@ -1313,7 +1313,10 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                 
                 with q_cols[col_i]:
                     if st.button(label, key=f"rec_btn_{col_i}", use_container_width=True):
+                        # Must set BOTH the helper var AND the widget's own session_state key
+                        # so that text_input renders the new value after rerun
                         st.session_state["query_input_val"] = q_text
+                        st.session_state["user_question_input"] = q_text
                         st.rerun()
             
             # 3. 對話輸入文字框
