@@ -149,16 +149,30 @@ def get_stock_data(symbol, days):
 # --- 3.1. 輔助功能：爬取真實中文公司名稱 (防 AI 幻覺) ---
 @st.cache_data(ttl=86400)
 def get_stock_name_from_web(code):
+    """從 Yahoo 台股頁面爬取真實公司名稱，用於新聞搜尋關鍵字。"""
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=3)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            title = soup.title.string
-            if title: return title.split('(')[0].strip()
-    except: pass
-    return f"代號 {code}"
+            # 嘗試從 title 提取
+            title_tag = soup.title
+            if title_tag and title_tag.string:
+                title_str = title_tag.string
+                # 格式通常是「台積電(2330) - 台灣Yahoo奇摩股市」
+                name = title_str.split('(')[0].strip()
+                if name and len(name) < 20:
+                    return name
+            # 備援：從 og:title meta 提取
+            og_title = soup.find('meta', property='og:title')
+            if og_title and og_title.get('content'):
+                name = og_title['content'].split('(')[0].strip()
+                if name and len(name) < 20:
+                    return name
+    except:
+        pass
+    return ""
 
 # --- 4. 技術指標計算 ---
 def add_indicators(df):
@@ -598,94 +612,182 @@ def call_ai(model_type, prompt):
     return "未知的模型類型"
 
 
-def fetch_stock_news_yahoo(symbol: str, max_items: int = 8) -> str:
-    """使用 yfinance 抓取個股最新新聞標題（Yahoo Finance 來源）。"""
+def fetch_stock_news_yahoo(symbol: str, max_items: int = 8) -> list:
+    """使用 yfinance 抓取個股最新新聞標題（Yahoo Finance 來源），回傳結構化 list。"""
+    results = []
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news or []
-        if not news:
-            return ""
-        lines = []
-        for i, item in enumerate(news[:max_items], 1):
+        for item in news[:max_items]:
+            # yfinance 新版 API 將資訊放在 content 子物件裡
             content = item.get("content", {})
-            title = content.get("title") or item.get("title", "(無標題)")
+            title = content.get("title") or item.get("title", "")
+            if not title:
+                continue
             pub = content.get("pubDate") or item.get("providerPublishTime", "")
             if pub and not isinstance(pub, str):
                 try:
                     pub = datetime.utcfromtimestamp(pub).strftime("%Y-%m-%d")
                 except Exception:
                     pub = str(pub)
-            lines.append(f"{i}. [Yahoo] {title} ({pub})")
-        return "\n".join(lines)
-    except Exception as e:
-        return ""
+            elif isinstance(pub, str) and len(pub) > 10:
+                pub = pub[:10]  # 截取日期部分
+            results.append({"title": title, "source": "Yahoo Finance", "pub": pub})
+    except Exception:
+        pass
+    return results
 
 
-def fetch_stock_news_google(symbol: str, max_items: int = 8) -> str:
-    """使用 Google News RSS 抓取個股最新新聞標題（Google 新聞來源）。"""
-    try:
-        import urllib.parse
-        query = urllib.parse.quote(symbol)
-        rss_url = f"https://news.google.com/rss/search?q={query}+stock&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(rss_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.content, "xml")
-        items = soup.find_all("item")[:max_items]
-        lines = []
-        for i, item in enumerate(items, 1):
-            title = item.find("title")
-            pub = item.find("pubDate")
-            title_text = title.get_text(strip=True) if title else "(無標題)"
-            pub_text = pub.get_text(strip=True)[:16] if pub else ""
-            lines.append(f"{i}. [Google] {title_text} ({pub_text})")
-        return "\n".join(lines)
-    except Exception as e:
+@st.cache_data(ttl=600)
+def fetch_stock_news_google(symbol: str, company_name: str = "", max_items: int = 8) -> list:
+    """使用 Google News RSS 抓取個股新聞，台股/美股智能關鍵字分流，回傳結構化 list。"""
+    import urllib.parse
+    results = []
+    # 判斷是否為台股（代碼為純數字或含 .TW/.TWO 後綴）
+    base_code = symbol.replace(".TW", "").replace(".TWO", "").replace(".TW", "")
+    is_taiwan = base_code.isdigit()
+
+    # 建立多組搜尋關鍵字（台股使用公司名稱+代碼，美股使用代碼+stock）
+    queries_to_try = []
+    if is_taiwan:
+        if company_name and company_name != f"代號 {base_code}" and company_name:
+            # 優先用公司中文名稱搜尋（命中率最高）
+            queries_to_try.append(f'"{company_name}" {base_code}')
+            queries_to_try.append(company_name)
+        # 備援：使用代碼搜尋（不加 stock 英文字）
+        queries_to_try.append(base_code)
+    else:
+        # 美股：使用 ticker + stock
+        queries_to_try.append(f'{symbol} stock')
+        queries_to_try.append(symbol)
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    seen_titles = set()
+
+    for query in queries_to_try:
+        if len(results) >= max_items:
+            break
+        try:
+            encoded_query = urllib.parse.quote(query)
+            if is_taiwan:
+                rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+            else:
+                rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
+            resp = requests.get(rss_url, headers=headers, timeout=8)
+            soup = BeautifulSoup(resp.content, "xml")
+            items_found = soup.find_all("item")
+            for item in items_found:
+                if len(results) >= max_items:
+                    break
+                title_tag = item.find("title")
+                pub_tag = item.find("pubDate")
+                source_tag = item.find("source")
+                title_text = title_tag.get_text(strip=True) if title_tag else ""
+                if not title_text or title_text in seen_titles:
+                    continue
+                seen_titles.add(title_text)
+                pub_text = pub_tag.get_text(strip=True)[:16] if pub_tag else ""
+                source_name = source_tag.get_text(strip=True) if source_tag else "Google News"
+                results.append({"title": title_text, "source": f"Google/{source_name}", "pub": pub_text})
+        except Exception:
+            continue
+    return results
+
+
+def fetch_smart_news(symbol: str, company_name: str = "", max_items: int = 10) -> list:
+    """整合 Yahoo + Google 雙來源，返回去重後的結構化新聞 list。"""
+    yahoo_list = fetch_stock_news_yahoo(symbol, max_items=max_items)
+    google_list = fetch_stock_news_google(symbol, company_name=company_name, max_items=max_items)
+    # 合併並去重（以標題為 key）
+    seen = set()
+    combined = []
+    for item in yahoo_list + google_list:
+        t = item.get("title", "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            combined.append(item)
+    return combined[:max_items]
+
+
+def format_news_for_ai(news_list: list) -> str:
+    """將結構化新聞 list 格式化成 AI prompt 適用的字串。"""
+    if not news_list:
         return ""
+    lines = []
+    for i, item in enumerate(news_list, 1):
+        title = item.get("title", "")
+        source = item.get("source", "")
+        pub = item.get("pub", "")
+        lines.append(f"{i}. [{source}] {title} ({pub})")
+    return "\n".join(lines)
 
 
 def fetch_stock_news(symbol: str, max_items: int = 10) -> str:
-    """整合 Yahoo Finance + Google News RSS 雙來源新聞，回傳格式化字串。"""
-    yahoo_news = fetch_stock_news_yahoo(symbol, max_items=max_items)
-    google_news = fetch_stock_news_google(symbol, max_items=max_items)
+    """兼容舊接口：整合雙來源新聞，回傳格式化字串（供 fetch_news_brief_with_gemma 調用）。"""
+    company_name = get_stock_name_from_web(symbol.replace(".TW", "").replace(".TWO", ""))
+    news_list = fetch_smart_news(symbol, company_name=company_name, max_items=max_items)
+    yahoo_items = [x for x in news_list if "Yahoo" in x.get("source", "")]
+    google_items = [x for x in news_list if "Google" in x.get("source", "")]
     combined = []
-    if yahoo_news:
+    if yahoo_items:
         combined.append("=== Yahoo Finance 新聞 ===")
-        combined.append(yahoo_news)
-    if google_news:
+        combined.append(format_news_for_ai(yahoo_items))
+    if google_items:
         combined.append("=== Google News 新聞 ===")
-        combined.append(google_news)
+        combined.append(format_news_for_ai(google_items))
     return "\n".join(combined) if combined else "（暫無最新新聞）"
 
 
 @st.cache_data(ttl=600)
 def fetch_news_brief_with_gemma(symbol: str, status_desc: str) -> str:
-    """使用 Gemini API 的 gemma-4-31b-it 模型，整合 Yahoo + Google 雙來源新聞，產出深度分析。"""
+    """使用 Gemini API 的 gemma-4-31b-it 模型，整合 Yahoo + Google 雙來源新聞，產出深度分析。
+    當確實無任何新聞時，改用 AI 知識庫兜底分析（避免畫面空白）。
+    """
     try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
             return "（無法生成新聞分析：Google API Key 未設定）"
 
-        # 整合雙來源新聞
+        # 整合雙來源新聞（使用升級後的智能搜尋）
         raw_news = fetch_stock_news(symbol, max_items=8)
-        if "暫無最新新聞" in raw_news or not raw_news.strip():
-            return "（暫無最新相關市場新聞）"
+        has_real_news = "暫無最新新聞" not in raw_news and raw_news.strip()
 
         client = genai.Client(api_key=api_key)
-        prompt = f"""
-        你是一位專業的資深美股/台股市場分析師。
-        請針對以下提供的個股【{symbol}】最新市場數據以及 Yahoo Finance + Google News 雙來源新聞標題，進行一次結構化、專業且精煉的繁體中文投資分析與新聞摘要。
 
-        【最新股票數據】：
-        {status_desc}
+        if has_real_news:
+            prompt = f"""
+            你是一位專業的資深美股/台股市場分析師。
+            請針對以下提供的個股【{symbol}】最新市場數據以及 Yahoo Finance + Google News 雙來源新聞標題，進行一次結構化、專業且精煉的繁體中文投資分析與新聞摘要。
 
-        【最新市場新聞標題（Yahoo Finance + Google News 雙來源）】：
-        {raw_news}
+            【最新股票數據】：
+            {status_desc}
 
-        【要求】：
-        1. 歸納出近期市場對該個股最關注的 2-3 個核心話題或事件（例如：財報表現、產品創新、資金流向或行業利空利多）。
-        2. 分析這些新聞事件與目前股價/數據之間的潛在關聯性或市場情緒。
-        3. 請以精煉的繁體中文條列式呈現，總字數控制在 250-400 字以內，語氣要客觀、專業、有洞察力。
-        """
+            【最新市場新聞標題（Yahoo Finance + Google News 雙來源）】：
+            {raw_news}
+
+            【要求】：
+            1. 歸納出近期市場對該個股最關注的 2-3 個核心話題或事件（例如：財報表現、產品創新、資金流向或行業利空利多）。
+            2. 分析這些新聞事件與目前股價/數據之間的潛在關聯性或市場情緒。
+            3. 請以精煉的繁體中文條列式呈現，總字數控制在 250-400 字以內，語氣要客觀、專業、有洞察力。
+            """
+        else:
+            # 知識庫兜底：無新聞時，引導 AI 用內建知識做情境推估
+            prompt = f"""
+            你是一位專業的資深美股/台股市場分析師，具備豐富的產業知識。
+            目前無法取得個股【{symbol}】的即時新聞，但根據以下最新技術面數據，請結合你對此公司、所屬產業及當前總體經濟環境的深度知識，進行一次專業的情境分析。
+
+            【最新股票數據】：
+            {status_desc}
+
+            【注意】：目前無最新新聞可參考，請完全依靠你的專業知識進行推斷，並明確標注「（基於市場背景知識推估）」。
+
+            【要求】：
+            1. 根據技術數據，推估近期市場最可能關注的 2-3 個潛在事件或產業趨勢。
+            2. 分析此類型個股通常在當前總體環境下面臨的機遇與風險。
+            3. 給出客觀的市場情緒推估。
+            4. 請以精煉的繁體中文條列式呈現，總字數控制在 200-350 字，語氣客觀且一針見血。
+            """
+
         response = client.models.generate_content(
             model="gemma-4-31b-it",
             contents=prompt
@@ -901,15 +1003,28 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     fin_data['負債權益比'] = info.get('debtToEquity', '未知')
                     fin_data['自由現金流'] = info.get('freeCashflow', '未知')
                     
-                    news_list = ticker_obj.news
-                    if news_list:
-                        news_text = "\n".join([f"- {item['title']}" for item in news_list[:5] if 'title' in item])
+                    # yfinance news 結構相容提取
+                    news_items_raw = ticker_obj.news or []
+                    for n_item in news_items_raw[:5]:
+                        nc = n_item.get("content", {})
+                        n_title = nc.get("title") or n_item.get("title", "")
+                        if n_title:
+                            news_text += f"- {n_title}\n"
                 except:
                     pass
-                
+
+                # 升級：若 Yahoo 無新聞，再嘗試 Google RSS 補充
+                if not news_text.strip():
+                    company_name_for_search = get_stock_name_from_web(raw_ticker)
+                    google_news_list = fetch_stock_news_google(
+                        final_symbol, company_name=company_name_for_search, max_items=5
+                    )
+                    for g_item in google_news_list:
+                        news_text += f"- [{g_item.get('source','')}] {g_item.get('title','')}\n"
+
                 debate_bg = "\n".join([f"- {k}: {v}" for k, v in fin_data.items() if v != '未知'])
                 if not debate_bg: debate_bg = "無法獲取最新財務數據。"
-                sentiment_info = f"新聞與焦點：\n{news_text}" if news_text else "查無近期特定新聞。"
+                sentiment_info = f"新聞與焦點：\n{news_text.strip()}" if news_text.strip() else "（暫無近期新聞，請依 AI 知識庫進行情境推估）"
 
                 mega_prompt = f"""
                 你現在是一組頂尖的「華爾街全方位 AI 投研團隊」。
@@ -1144,65 +1259,96 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
         with tab4:
             st.markdown(f"### 📰 {final_symbol} 市場情緒分析")
             st.markdown("分析近期市場新聞、論壇風向與機構觀點，抓出市場對這家公司的真實看法與情緒溫度。")
-            
+
+            # --- 新聞引擎升級：雙管道智能抓取 ---
+            # 取得公司中文名稱（供 Google RSS 搜尋使用）
+            _company_name_tab4 = get_stock_name_from_web(raw_ticker)
+
             if st.button("啟動市場情緒雷達 (Sentiment Scanner)"):
-                with st.spinner("AI 正在掃描全網新聞標題與市場輿論風向..."):
-                    
-                    # 嘗試抓取近期的 Yahoo 財經新聞
-                    news_text = ""
-                    try:
-                        ticker_obj = yf.Ticker(final_symbol)
-                        news_list = ticker_obj.news
-                        if news_list:
-                            # 提取最多 5 則新聞標題作為市場情緒參考
-                            news_titles = [f"- {item['title']}" for item in news_list[:5] if 'title' in item]
-                            news_text = "\n".join(news_titles)
-                    except:
-                        pass
-                    
-                    sentiment_info = f"【近期盤面對應新聞與焦點】：\n{news_text}" if news_text else "查無近期特定新聞，請透過 AI 本身對這家公司近期話題的知識進行分析。"
-                    
+                with st.spinner("📡 AI 正在透過雙管道（Yahoo + Google）掃描全網新聞與市場輿論..."):
+
+                    # === 雙管道新聞抓取 ===
+                    smart_news_list = fetch_smart_news(
+                        final_symbol, company_name=_company_name_tab4, max_items=10
+                    )
+                    st.session_state[f"sentiment_news_{final_symbol}"] = smart_news_list
+
+                    # 格式化成 AI prompt 用字串
+                    news_for_ai = format_news_for_ai(smart_news_list)
+
+                    if news_for_ai:
+                        sentiment_info = f"""【近期雙管道新聞標題（Yahoo Finance + Google News）】：
+{news_for_ai}"""
+                        news_source_note = f"✅ 成功取得 {len(smart_news_list)} 則新聞（Yahoo + Google 雙管道）"
+                    else:
+                        sentiment_info = f"""【新聞狀態】：目前無法取得 {final_symbol}（{_company_name_tab4 or ''}）的即時新聞。
+請完全依靠你的專業知識、該公司所屬產業背景與當前總體經濟環境，進行專業的情境推估分析。"""
+                        news_source_note = "⚠️ 暫未找到即時新聞，AI 將使用內建知識庫進行推估"
+
+                    st.session_state[f"sentiment_news_note_{final_symbol}"] = news_source_note
+
                     sentiment_prompt = f"""
                     你現在是一位敏銳的「市場情緒分析師 (Sentiment Analyst)」與「行為金融學專家」。
-                    
-                    分析標的：{final_symbol}
+
+                    分析標的：{final_symbol}（{_company_name_tab4 or final_symbol}）
                     現在時間：{datetime.now().strftime("%Y-%m-%d")}
-                    
-                    以下是近期市場上關於這家公司的最新新聞標題或是近期焦點：
+
                     {sentiment_info}
-                    
-                    請利用這些資訊，並結合你對總體經濟、近期科技趨勢與投資人心理的理解，分析市場目前對這家公司的「真實情緒」與「預期心理」。
-                    
+
+                    請利用以上資訊，並結合你對總體經濟、近期科技趨勢與投資人心理的理解，分析市場目前對這家公司的「真實情緒」與「預期心理」。
+                    若無新聞，請依 AI 知識庫進行合理推估，並於每項結論後標注「（知識庫推估）」。
+
                     報告請嚴格依循以下架構撰寫，並使用繁體中文，語氣需具備市場敏銳度、客觀且一針見血：
-                    
+
                     ### 🌡️ 1. 整體市場情緒溫度表 (Sentiment Gauge)
                        - 極度狂熱 / 偏向樂觀 / 中立觀望 / 偏向悲觀 / 極度恐慌？請給出一個明確的定調。
                        - 市場目前對這家公司最大的「期待」和「恐懼」分別是什麼？
-                    
+
                     ### 🗣️ 2. 大眾與散戶的真實風向 (Retail Perspective)
                        - 近期散戶在討論什麼？(例如：股息該不該領、利多出盡、還是買不到好焦慮？)
                        - 散戶目前是正在瘋狂追價，還是急著停損解套？
-                    
+
                     ### 🏦 3. 法人機構與聰明錢的動向預測 (Smart Money View)
                        - 法人通常用什麼角度看這家公司近期的題材？(例如：認為新聞是短期炒作，還是長線實質利多？)
                        - 外資或主力近期可能正在做什麼佈局(請合乎常理與現況推測)？
-                    
+
                     ### ⚖️ 4. 逆思考與潛在反轉點 (Contrarian View)
                        - 人多的地方不要去。根據目前的極端情緒（如果有的話），是不是有超跌錯殺，或者是股價透支未來的狀況？
                        - 你會給現在想「進場」或「出場」的投資人什麼反直覺的逆勢操作警告？
                     """
-                    
+
                     res_sent_gemini = call_ai('gemini', sentiment_prompt)
                     st.session_state[f"sentiment_result_gemini_{final_symbol}"] = res_sent_gemini
-                    
+
                     res_sent_groq = call_ai('groq', sentiment_prompt)
                     st.session_state[f"sentiment_result_groq_{final_symbol}"] = res_sent_groq
 
-            # 顯示分析結果
+            # --- 顯示新聞透明化預覽面板 ---
+            if f"sentiment_news_{final_symbol}" in st.session_state:
+                news_list_cached = st.session_state[f"sentiment_news_{final_symbol}"]
+                news_note = st.session_state.get(f"sentiment_news_note_{final_symbol}", "")
+
+                if news_note:
+                    if "✅" in news_note:
+                        st.success(news_note)
+                    else:
+                        st.warning(news_note)
+
+                if news_list_cached:
+                    with st.expander(f"📋 本次分析所依據的新聞來源（{len(news_list_cached)} 則）", expanded=False):
+                        for idx, n in enumerate(news_list_cached, 1):
+                            source_icon = "🟡" if "Yahoo" in n.get("source", "") else "🔵"
+                            st.markdown(
+                                f"{source_icon} **{idx}.** {n.get('title', '')}  "
+                                f"<span style='color:#888; font-size:0.8em'>({n.get('source', '')} · {n.get('pub', '')})</span>",
+                                unsafe_allow_html=True
+                            )
+
+            # --- 顯示 AI 分析結果 ---
             if f"sentiment_result_gemini_{final_symbol}" in st.session_state and f"sentiment_result_groq_{final_symbol}" in st.session_state:
                 sent_gemini = st.session_state[f"sentiment_result_gemini_{final_symbol}"]
                 sent_groq = st.session_state[f"sentiment_result_groq_{final_symbol}"]
-                
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("### 🔵 Gemini 情緒解析")
@@ -1210,7 +1356,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         st.error(sent_gemini)
                     else:
                         st.info(sent_gemini)
-                
+
                 with col2:
                     st.markdown("### 🟠 Llama 3 情緒解析")
                     if "未設定" in sent_groq or "錯誤" in sent_groq:
