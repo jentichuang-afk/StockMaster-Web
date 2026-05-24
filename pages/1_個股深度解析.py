@@ -1076,19 +1076,19 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         res[tag] = content
                     return res
                 
-                mega_gemini = call_ai('gemini', mega_prompt)
-                parsed_gemini = parse_mega(mega_gemini)
-                st.session_state[f"tech_result_gemini_{final_symbol}"] = parsed_gemini['technical_analysis']
-                st.session_state[f"fundamental_result_gemini_{final_symbol}"] = parsed_gemini['fundamental_analysis']
-                st.session_state[f"sentiment_result_gemini_{final_symbol}"] = parsed_gemini['sentiment_analysis']
-                st.session_state[f"debate_result_gemini_{final_symbol}"] = parsed_gemini['ai_debate']
-
-                mega_groq = call_ai('groq', mega_prompt)
-                parsed_groq = parse_mega(mega_groq)
-                st.session_state[f"tech_result_groq_{final_symbol}"] = parsed_groq['technical_analysis']
-                st.session_state[f"fundamental_result_groq_{final_symbol}"] = parsed_groq['fundamental_analysis']
-                st.session_state[f"sentiment_result_groq_{final_symbol}"] = parsed_groq['sentiment_analysis']
-                st.session_state[f"debate_result_groq_{final_symbol}"] = parsed_groq['ai_debate']
+                for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                    provider = cfg["provider"]
+                    model = cfg["model"]
+                    name = cfg["name"]
+                    
+                    with st.spinner(f"⏳ 正在讓專家 {name} ({provider}/{model}) 生成報告..."):
+                        expert_response = call_expert_chat(provider, model, mega_prompt, history=[])
+                        
+                        parsed = parse_mega(expert_response)
+                        st.session_state[f"tech_result_exp{idx}_{final_symbol}"] = parsed['technical_analysis']
+                        st.session_state[f"fundamental_result_exp{idx}_{final_symbol}"] = parsed['fundamental_analysis']
+                        st.session_state[f"sentiment_result_exp{idx}_{final_symbol}"] = parsed['sentiment_analysis']
+                        st.session_state[f"debate_result_exp{idx}_{final_symbol}"] = parsed['ai_debate']
                 
                 st.success("✅ 四大分析報告已全面生成完畢！請直接點擊下方各分頁查看結果。")
 
