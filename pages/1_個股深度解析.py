@@ -1149,34 +1149,41 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
 
         with tab2:
             st.markdown("### 🤖 AI 技術面操作建議")
-            if st.button("單獨啟動技術面分析 (Technical AI)"):
-                with st.spinner("AI 正在針對技術面與量價結構進行單獨解析..."):
-                    target_cols = ['Close', 'MA5', 'MA20', 'MA60', 'K', 'D', 'MACD', 'MACD_Hist', 'OBV']
-                    tech_data_str = df.tail(5)[target_cols].to_string()
-                    
-                    prompt = get_prompt(final_symbol, last['Close'], tech_data_str)
-                    
-                    st.session_state[f"tech_result_gemini_{final_symbol}"] = call_ai('gemini', prompt)
-                    st.session_state[f"tech_result_groq_{final_symbol}"] = call_ai('groq', prompt)
+            if st.button("單獨啟動技術面分析 (Technical AI)", key="btn_run_tech_analysis"):
+                for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                    provider = cfg["provider"]
+                    model = cfg["model"]
+                    name = cfg["name"]
+                    with st.spinner(f"⏳ 專家 {name} 正在解析技術面..."):
+                        target_cols = ['Close', 'MA5', 'MA20', 'MA60', 'K', 'D', 'MACD', 'MACD_Hist', 'OBV']
+                        tech_data_str = df.tail(5)[target_cols].to_string()
+                        prompt = get_prompt(final_symbol, last['Close'], tech_data_str)
+                        st.session_state[f"tech_result_exp{idx}_{final_symbol}"] = call_expert_chat(provider, model, prompt, [])
             
-            if f"tech_result_gemini_{final_symbol}" in st.session_state and f"tech_result_groq_{final_symbol}" in st.session_state:
-                res_gemini = st.session_state[f"tech_result_gemini_{final_symbol}"]
-                res_groq = st.session_state[f"tech_result_groq_{final_symbol}"]
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("### 🔵 Gemini 操盤建議")
-                    if "未設定" in res_gemini or "錯誤" in res_gemini:
-                        st.error(res_gemini)
-                    else:
-                        st.info(res_gemini)
-                
-                with col2:
-                    st.markdown("### 🟠 Llama 3 操盤建議")
-                    if "未設定" in res_groq or "錯誤" in res_groq:
-                        st.error(res_groq)
-                    else:
-                        st.warning(res_groq)
+            has_tech_results = any(f"tech_result_exp{idx}_{final_symbol}" in st.session_state for idx in range(3))
+            if has_tech_results:
+                cols = st.columns(3)
+                for idx in range(3):
+                    cfg = st.session_state["expert_configs"][idx]
+                    name = cfg["name"]
+                    model = cfg["model"]
+                    res_key = f"tech_result_exp{idx}_{final_symbol}"
+                    
+                    with cols[idx]:
+                        st.markdown(f"### 👤 {name}\n<small style='color:#888'>{model}</small>", unsafe_allow_html=True)
+                        if res_key in st.session_state:
+                            res_text = st.session_state[res_key]
+                            if "未設定" in res_text or "錯誤" in res_text or "失敗" in res_text:
+                                st.error(res_text)
+                            else:
+                                if idx == 0:
+                                    st.info(res_text)
+                                elif idx == 1:
+                                    st.success(res_text)
+                                else:
+                                    st.warning(res_text)
+                        else:
+                            st.info("💡 尚未生成此專家的分析。請點擊上方按鈕啟動分析。")
                         
         with tab3:
             st.markdown(f"### 🏛️ {final_symbol} 基本面與產業分析")
