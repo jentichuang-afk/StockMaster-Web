@@ -1365,11 +1365,10 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         st.warning(sent_groq)
 
         with tab5:
-            pass
             st.markdown(f"### 🗣️ {final_symbol} AI 多空辯論")
             st.markdown("讓 AI 同時扮演**成長型主管**、**價值型老手**、以及**惡意做空機構**，展開精彩的投資辯論大會！")
             
-            if st.button("舉辦投研辯論會 (Investment Debate)"):
+            if st.button("舉辦投研辯論會 (Investment Debate)", key="btn_run_debate_analysis"):
                 with st.spinner("AI 正在切換多重人格並調閱財務數據，準備召開圓桌會議..."):
                     
                     # 抓取真實財務數據供辯論使用，避免 AI 只講空話
@@ -1423,31 +1422,37 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     請全程使用繁體中文。
                     """
                     
-                    res_debate_gemini = call_ai('gemini', debate_prompt)
-                    st.session_state[f"debate_result_gemini_{final_symbol}"] = res_debate_gemini
-                    
-                    res_debate_groq = call_ai('groq', debate_prompt)
-                    st.session_state[f"debate_result_groq_{final_symbol}"] = res_debate_groq
+                    for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                        provider = cfg["provider"]
+                        model = cfg["model"]
+                        name = cfg["name"]
+                        with st.spinner(f"⏳ 專家 {name} 正在進行投研多空辯論..."):
+                            st.session_state[f"debate_result_exp{idx}_{final_symbol}"] = call_expert_chat(provider, model, debate_prompt, [])
 
-            # 顯示分析結果
-            if f"debate_result_gemini_{final_symbol}" in st.session_state and f"debate_result_groq_{final_symbol}" in st.session_state:
-                deb_gemini = st.session_state[f"debate_result_gemini_{final_symbol}"]
-                deb_groq = st.session_state[f"debate_result_groq_{final_symbol}"]
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("### 🔵 Gemini 多空激辯現場")
-                    if "未設定" in deb_gemini or "錯誤" in deb_gemini:
-                        st.error(deb_gemini)
-                    else:
-                        st.info(deb_gemini)
-                
-                with col2:
-                    st.markdown("### 🟠 Llama 3 多空激辯現場")
-                    if "未設定" in deb_groq or "錯誤" in deb_groq:
-                        st.error(deb_groq)
-                    else:
-                        st.warning(deb_groq)
+            has_debate_results = any(f"debate_result_exp{idx}_{final_symbol}" in st.session_state for idx in range(3))
+            if has_debate_results:
+                cols = st.columns(3)
+                for idx in range(3):
+                    cfg = st.session_state["expert_configs"][idx]
+                    name = cfg["name"]
+                    model = cfg["model"]
+                    res_key = f"debate_result_exp{idx}_{final_symbol}"
+                    
+                    with cols[idx]:
+                        st.markdown(f"### 👤 {name}\n<small style='color:#888'>{model}</small>", unsafe_allow_html=True)
+                        if res_key in st.session_state:
+                            res_text = st.session_state[res_key]
+                            if "未設定" in res_text or "錯誤" in res_text or "失敗" in res_text:
+                                st.error(res_text)
+                            else:
+                                if idx == 0:
+                                    st.info(res_text)
+                                elif idx == 1:
+                                    st.success(res_text)
+                                else:
+                                    st.warning(res_text)
+                        else:
+                            st.info("💡 尚未生成此專家的分析。請點擊上方按鈕啟動分析。")
 
         with tab6:
             st.markdown(f"### 🤖 {final_symbol} AI 專家聯合會診 & 多輪辯論室")
