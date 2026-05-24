@@ -1189,7 +1189,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
             st.markdown(f"### 🏛️ {final_symbol} 基本面與產業分析")
             st.markdown("利用 AI 結合常識與最新市場洞察，深入剖析該公司的基本面體質。")
             
-            if st.button("啟動基本面分析深潛 (Deep Dive)"):
+            if st.button("啟動基本面分析深潛 (Deep Dive)", key="btn_run_fundamental_analysis"):
                 with st.spinner("AI 正在調閱該公司的產業定位、護城河與財務特徵..."):
                     
                     # 嘗試抓取基本的公司資訊給 AI 參考 (非必須，但能提升回答品質)
@@ -1237,31 +1237,37 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                        - 給予一句話的長線投資人建議 (例如：「適合防禦型存股族」、「適合承擔高風險追求成長的投資人」等)。
                     """
                     
-                    result_gemini = call_ai('gemini', fundamental_prompt)
-                    st.session_state[f"fundamental_result_gemini_{final_symbol}"] = result_gemini
-                    
-                    result_groq = call_ai('groq', fundamental_prompt)
-                    st.session_state[f"fundamental_result_groq_{final_symbol}"] = result_groq
+                    for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                        provider = cfg["provider"]
+                        model = cfg["model"]
+                        name = cfg["name"]
+                        with st.spinner(f"⏳ 專家 {name} 正在深度解析基本面..."):
+                            st.session_state[f"fundamental_result_exp{idx}_{final_symbol}"] = call_expert_chat(provider, model, fundamental_prompt, [])
 
-            # 顯示分析結果 (如果是之前已經分析過的，也會顯示出來)
-            if f"fundamental_result_gemini_{final_symbol}" in st.session_state and f"fundamental_result_groq_{final_symbol}" in st.session_state:
-                res_gemini = st.session_state[f"fundamental_result_gemini_{final_symbol}"]
-                res_groq = st.session_state[f"fundamental_result_groq_{final_symbol}"]
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("### 🔵 Gemini 基本面報告")
-                    if "未設定" in res_gemini or "錯誤" in res_gemini:
-                        st.error(res_gemini)
-                    else:
-                        st.info(res_gemini)
-                
-                with col2:
-                    st.markdown("### 🟠 Llama 3 基本面報告")
-                    if "未設定" in res_groq or "錯誤" in res_groq:
-                        st.error(res_groq)
-                    else:
-                        st.warning(res_groq)
+            has_fundamental_results = any(f"fundamental_result_exp{idx}_{final_symbol}" in st.session_state for idx in range(3))
+            if has_fundamental_results:
+                cols = st.columns(3)
+                for idx in range(3):
+                    cfg = st.session_state["expert_configs"][idx]
+                    name = cfg["name"]
+                    model = cfg["model"]
+                    res_key = f"fundamental_result_exp{idx}_{final_symbol}"
+                    
+                    with cols[idx]:
+                        st.markdown(f"### 👤 {name}\n<small style='color:#888'>{model}</small>", unsafe_allow_html=True)
+                        if res_key in st.session_state:
+                            res_text = st.session_state[res_key]
+                            if "未設定" in res_text or "錯誤" in res_text or "失敗" in res_text:
+                                st.error(res_text)
+                            else:
+                                if idx == 0:
+                                    st.info(res_text)
+                                elif idx == 1:
+                                    st.success(res_text)
+                                else:
+                                    st.warning(res_text)
+                        else:
+                            st.info("💡 尚未生成此專家的分析。請點擊上方按鈕啟動分析。")
 
         with tab4:
             st.markdown(f"### 📰 {final_symbol} 市場情緒分析")
@@ -1324,11 +1330,12 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                        - 你會給現在想「進場」或「出場」的投資人什麼反直覺的逆勢操作警告？
                     """
 
-                    res_sent_gemini = call_ai('gemini', sentiment_prompt)
-                    st.session_state[f"sentiment_result_gemini_{final_symbol}"] = res_sent_gemini
-
-                    res_sent_groq = call_ai('groq', sentiment_prompt)
-                    st.session_state[f"sentiment_result_groq_{final_symbol}"] = res_sent_groq
+                    for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                        provider = cfg["provider"]
+                        model = cfg["model"]
+                        name = cfg["name"]
+                        with st.spinner(f"⏳ 專家 {name} 正在深度解析情緒面..."):
+                            st.session_state[f"sentiment_result_exp{idx}_{final_symbol}"] = call_expert_chat(provider, model, sentiment_prompt, [])
 
             # --- 顯示新聞透明化預覽面板 ---
             if f"sentiment_news_{final_symbol}" in st.session_state:
@@ -1352,24 +1359,30 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                             )
 
             # --- 顯示 AI 分析結果 ---
-            if f"sentiment_result_gemini_{final_symbol}" in st.session_state and f"sentiment_result_groq_{final_symbol}" in st.session_state:
-                sent_gemini = st.session_state[f"sentiment_result_gemini_{final_symbol}"]
-                sent_groq = st.session_state[f"sentiment_result_groq_{final_symbol}"]
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("### 🔵 Gemini 情緒解析")
-                    if "未設定" in sent_gemini or "錯誤" in sent_gemini:
-                        st.error(sent_gemini)
-                    else:
-                        st.info(sent_gemini)
-
-                with col2:
-                    st.markdown("### 🟠 Llama 3 情緒解析")
-                    if "未設定" in sent_groq or "錯誤" in sent_groq:
-                        st.error(sent_groq)
-                    else:
-                        st.warning(sent_groq)
+            has_sentiment_results = any(f"sentiment_result_exp{idx}_{final_symbol}" in st.session_state for idx in range(3))
+            if has_sentiment_results:
+                cols = st.columns(3)
+                for idx in range(3):
+                    cfg = st.session_state["expert_configs"][idx]
+                    name = cfg["name"]
+                    model = cfg["model"]
+                    res_key = f"sentiment_result_exp{idx}_{final_symbol}"
+                    
+                    with cols[idx]:
+                        st.markdown(f"### 👤 {name}\n<small style='color:#888'>{model}</small>", unsafe_allow_html=True)
+                        if res_key in st.session_state:
+                            res_text = st.session_state[res_key]
+                            if "未設定" in res_text or "錯誤" in res_text or "失敗" in res_text:
+                                st.error(res_text)
+                            else:
+                                if idx == 0:
+                                    st.info(res_text)
+                                elif idx == 1:
+                                    st.success(res_text)
+                                else:
+                                    st.warning(res_text)
+                        else:
+                            st.info("💡 尚未生成此專家的分析。請點擊上方按鈕啟動分析。")
 
         with tab5:
             st.markdown(f"### 🗣️ {final_symbol} AI 多空辯論")
