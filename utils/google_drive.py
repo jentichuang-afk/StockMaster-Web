@@ -263,8 +263,10 @@ def _find_expert_config_file(service):
 
 def load_expert_config_from_drive():
     """
-    從 Google Drive 讀取專家設定 JSON。
-    成功回傳 list/dict，失敗或不存在回傳 None。
+    從 Google Drive 讀取整合設定 JSON。
+    回傳 dict 格式：{"experts": [...], "moderator": {...}}
+    相容舊版純 list 格式（自動轉換）。
+    失敗或不存在回傳 None。
     """
     service = _get_drive_service()
     if not service:
@@ -282,15 +284,22 @@ def load_expert_config_from_drive():
         while not done:
             _, done = downloader.next_chunk()
         buffer.seek(0)
-        return json.loads(buffer.read().decode("utf-8").strip())
+        data = json.loads(buffer.read().decode("utf-8").strip())
+
+        # 相容舊版純 list 格式
+        if isinstance(data, list):
+            return {"experts": data, "moderator": {"provider": "Google", "model": "gemini-2.5-flash"}}
+        return data
     except Exception as e:
         st.warning(f"⚠️ 從 Google Drive 讀取專家設定失敗：{e}")
         return None
 
 
-def save_expert_config_to_drive(config_data):
+def save_expert_config_to_drive(experts_list, moderator_cfg=None):
     """
-    將專家設定寫入 Google Drive。
+    將專家 + 裁判設定整合寫入 Google Drive。
+    experts_list: list of {name, provider, model}
+    moderator_cfg: {provider, model}  (可選，None 時不更動現有裁判設定)
     成功回傳 True，失敗回傳 False。
     """
     service = _get_drive_service()
@@ -298,6 +307,10 @@ def save_expert_config_to_drive(config_data):
         return False
 
     try:
+        config_data = {
+            "experts": experts_list,
+            "moderator": moderator_cfg if moderator_cfg else {"provider": "Google", "model": "gemini-2.5-flash"}
+        }
         file_metadata = {"name": EXPERT_CONFIG_FILENAME, "mimeType": "application/json"}
         content = json.dumps(config_data, ensure_ascii=False, indent=2).encode("utf-8")
         media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/json")

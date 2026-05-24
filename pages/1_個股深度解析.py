@@ -1325,17 +1325,22 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                         {"name": "索羅斯總經獵手", "provider": "OpenRouter", "model": "meta-llama/llama-3.1-8b-instruct:free"}
                     ]
 
-                # --- 1.1 從 Google Drive 載入專家設定 (若已登入且尚未載入) ---
+                # --- 1.1 從 Google Drive 載入專家 + 裁判設定 (若已登入且尚未載入) ---
                 if is_logged_in() and "expert_configs_loaded_from_drive" not in st.session_state:
-                    with st.spinner("⏳ 正在從 Google Drive 讀取您的專家設定..."):
-                        drive_configs = load_expert_config_from_drive()
-                        if drive_configs and isinstance(drive_configs, list) and len(drive_configs) == 3:
-                            st.session_state["expert_configs"] = drive_configs
-                            st.toast("📅 已成功從 Google Drive 套用您的專屬專家設定！", icon="📅")
+                    with st.spinner("⏳ 正在從 Google Drive 讀取您的專家 + 裁判設定..."):
+                        drive_data = load_expert_config_from_drive()
+                        if drive_data and isinstance(drive_data, dict):
+                            experts_from_drive = drive_data.get("experts", [])
+                            moderator_from_drive = drive_data.get("moderator", {})
+                            if experts_from_drive and len(experts_from_drive) == 3:
+                                st.session_state["expert_configs"] = experts_from_drive
+                            if moderator_from_drive and "provider" in moderator_from_drive:
+                                st.session_state["debate_moderator_cfg"] = moderator_from_drive
+                            st.toast("📅 已成功從 Google Drive 套用您的專家 + 裁判設定！", icon="📅")
                         st.session_state["expert_configs_loaded_from_drive"] = True
 
-                # --- 2. 共用：專家設定面板 ---
-                with st.expander("⚙️ 專家陣容與模型配置", expanded=False):
+                # --- 2. 共用：專家 + 裁判整合設定面板 ---
+                with st.expander("⚙️ 專家陣容、模型配置與裁判設定", expanded=False):
                     st.markdown("您可以配置最多 3 位專家，並為每位專家指定名稱、API 供應商及特定的 AI 模型：")
 
                     cols = st.columns(3)
@@ -1362,17 +1367,40 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                             model = st.selectbox(f"模型", models, index=models.index(default_model) if default_model in models else 0, key=f"exp_model_{idx}")
                             updated_configs.append({"name": exp_name, "provider": provider, "model": model})
 
-                    if st.button("💾 儲存並套用專家設定"):
+                    # --- 裁判設定（整合在同一面板內） ---
+                    st.markdown("---")
+                    st.markdown("🧑\u200d⚖️ **中立裁判設定**（負責辯論結束後出具「投資共識決策白皮書」）")
+                    mod_cols = st.columns(2)
+                    mod_cfg_now = st.session_state.get("debate_moderator_cfg", {"provider": "Google", "model": "gemini-2.5-flash"})
+                    with mod_cols[0]:
+                        mod_provider_opts = ["Google", "Nvidia", "OpenRouter"]
+                        _mod_prov_idx = mod_provider_opts.index(mod_cfg_now["provider"]) if mod_cfg_now.get("provider") in mod_provider_opts else 0
+                        mod_provider_sel = st.selectbox("裁判供應商", mod_provider_opts, index=_mod_prov_idx, key="cfg_mod_provider")
+                    with mod_cols[1]:
+                        if mod_provider_sel == "Google":
+                            mod_model_list = fetch_google_models(st.secrets.get("GEMINI_API_KEY"))
+                        elif mod_provider_sel == "Nvidia":
+                            mod_model_list = fetch_nvidia_models(st.secrets.get("NVIDIA_API_KEY"))
+                        else:
+                            mod_model_list = fetch_openrouter_models(st.secrets.get("OPENROUTER_API_KEY"))
+                        _saved_mod_model = mod_cfg_now.get("model", "")
+                        _mod_model_idx = mod_model_list.index(_saved_mod_model) if _saved_mod_model in mod_model_list else 0
+                        mod_model_sel = st.selectbox("裁判模型", mod_model_list, index=_mod_model_idx, key="cfg_mod_model")
+
+                    updated_moderator_cfg = {"provider": mod_provider_sel, "model": mod_model_sel}
+
+                    if st.button("💾 儲存並套用專家 + 裁判設定"):
                         st.session_state["expert_configs"] = updated_configs
+                        st.session_state["debate_moderator_cfg"] = updated_moderator_cfg
                         if is_logged_in():
-                            with st.spinner("💾 正在同步設定至 Google Drive..."):
-                                success = save_expert_config_to_drive(updated_configs)
+                            with st.spinner("💾 正在將專家 + 裁判設定同步至 Google Drive..."):
+                                success = save_expert_config_to_drive(updated_configs, updated_moderator_cfg)
                                 if success:
-                                    st.toast("✅ 專家配置已更新並儲存至 Google Drive！", icon="💾")
+                                    st.toast("✅ 專家 + 裁判配置已更新並儲存至 Google Drive！", icon="💾")
                                 else:
                                     st.toast("⚠️ 儲存至 Google Drive 失敗，但已在本地生效。", icon="⚠️")
                         else:
-                            st.toast("✅ 專家配置已在本地生效！(登入 Google 帳號可永久保存設定)", icon="💾")
+                            st.toast("✅ 專家 + 裁判配置已在本地生效！(登入 Google 帳號可永久保存設定)", icon="💾")
                         st.rerun()
 
                 # 共用：技術面數據 (兩個 sub-tabs 都需要)
@@ -1568,29 +1596,9 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     with col_news:
                         use_news = st.toggle("📰 引入即時新聞（Yahoo+Google）", value=True, key="debate_use_news")
 
-                    st.markdown("**🧑‍⚖️ 中立裁判設定**（負責最終出具投資共識白皮書）")
-                    mod_col1, mod_col2 = st.columns(2)
-                    with mod_col1:
-                        mod_provider_opts = ["Google", "Nvidia", "OpenRouter"]
-                        mod_provider = st.selectbox(
-                            "裁判供應商",
-                            mod_provider_opts,
-                            index=mod_provider_opts.index(st.session_state["debate_moderator_cfg"]["provider"]) if st.session_state["debate_moderator_cfg"]["provider"] in mod_provider_opts else 0,
-                            key="mod_provider_select"
-                        )
-                    with mod_col2:
-                        if mod_provider == "Google":
-                            mod_models = fetch_google_models(st.secrets.get("GEMINI_API_KEY"))
-                        elif mod_provider == "Nvidia":
-                            mod_models = fetch_nvidia_models(st.secrets.get("NVIDIA_API_KEY"))
-                        else:
-                            mod_models = fetch_openrouter_models(st.secrets.get("OPENROUTER_API_KEY"))
-
-                        saved_mod_model = st.session_state["debate_moderator_cfg"].get("model", "")
-                        mod_model_idx = mod_models.index(saved_mod_model) if saved_mod_model in mod_models else 0
-                        mod_model = st.selectbox("裁判模型", mod_models, index=mod_model_idx, key="mod_model_select")
-
-                    st.session_state["debate_moderator_cfg"] = {"provider": mod_provider, "model": mod_model}
+                    # \u88c1\u5224\u8a2d\u5b9a\u5df2\u6574\u5408\u5230\u4e0a\u65b9\u7684\u5c08\u5bb6\u9762\u677f\uff0c\u9019\u88e1\u53ea\u986f\u793a\u76ee\u524d\u8a2d\u5b9a
+                    mod_cfg_display = st.session_state.get("debate_moderator_cfg", {"provider": "Google", "model": "gemini-2.5-flash"})
+                    st.info(f"\ud83e\uddd1\u200d\u2696\ufe0f \u76ee\u524d\u88c1\u5224\uff1a**{mod_cfg_display.get('provider', 'Google')}** / `{mod_cfg_display.get('model', 'gemini-2.5-flash')}`  \u2192  \u5982\u9700\u66f4\u6539\uff0c\u8acb\u5c55\u958b\u4e0a\u65b9\u7684\u300c\u2699\ufe0f \u5c08\u5bb6\u9663\u5bb9\u3001\u6a21\u578b\u914d\u7f6e\u8207\u88c1\u5224\u8a2d\u5b9a\u300d\u9762\u677f\u3002")
 
                 # --- 控制按鈕 ---
                 btn_col1, btn_col2, _ = st.columns([2, 1, 3])
