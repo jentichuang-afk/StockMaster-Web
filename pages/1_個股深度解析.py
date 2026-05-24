@@ -1742,9 +1742,9 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                     with col_news:
                         use_news = st.toggle("📰 引入即時新聞（Yahoo+Google）", value=True, key="debate_use_news")
 
-                    # \u88c1\u5224\u8a2d\u5b9a\u5df2\u6574\u5408\u5230\u4e0a\u65b9\u7684\u5c08\u5bb6\u9762\u677f\uff0c\u9019\u88e1\u53ea\u986f\u793a\u76ee\u524d\u8a2d\u5b9a
+                    # 裁判設定已整合到上方的專家面板，這裡只顯示目前設定
                     mod_cfg_display = st.session_state.get("debate_moderator_cfg", {"provider": "Google", "model": "gemini-2.5-flash"})
-                    st.info(f"\ud83e\uddd1\u200d\u2696\ufe0f \u76ee\u524d\u88c1\u5224\uff1a**{mod_cfg_display.get('provider', 'Google')}** / `{mod_cfg_display.get('model', 'gemini-2.5-flash')}`  \u2192  \u5982\u9700\u66f4\u6539\uff0c\u8acb\u5c55\u958b\u4e0a\u65b9\u7684\u300c\u2699\ufe0f \u5c08\u5bb6\u9663\u5bb9\u3001\u6a21\u578b\u914d\u7f6e\u8207\u88c1\u5224\u8a2d\u5b9a\u300d\u9762\u677f\u3002")
+                    st.info(f"🧑‍⚖️ 目前裁判：**{mod_cfg_display.get('provider', 'Google')}** / `{mod_cfg_display.get('model', 'gemini-2.5-flash')}`  →  如需更改，請展開上方的「⚙️ 專家陣容、模型配置與裁判設定」面板。")
 
                 # --- 控制按鈕 ---
                 btn_col1, btn_col2, _ = st.columns([2, 1, 3])
