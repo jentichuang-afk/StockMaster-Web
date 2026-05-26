@@ -1477,7 +1477,7 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
         with tab6:
             st.markdown(f"### 🤖 {final_symbol} AI 專家聯合會診 & 多輪辯論室")
 
-            sub_tab1, sub_tab2 = st.tabs(["💬 專家問答會診", "🥊 AI 專家多輪辯論室"])
+            sub_tab1, sub_tab2, sub_tab3 = st.tabs(["💬 專家問答會診", "🥊 AI 專家多輪辯論室", "☕ 自由漫聊室"])
 
             # =====================================================================
             # SUB-TAB 1：原有的專家問答互動聊天室
@@ -1994,9 +1994,143 @@ if st.session_state.get('show_analysis_page', False) and ticker_input:
                                     system_prompt="你是一位頂尖的投資論壇主席，出具全面客觀的投資共識報告。",
                                     history=moderator_history,
                                     symbol=final_symbol,
-                                    news_brief=news_brief_debate
-                                )
                             )
+                        )
 
                         st.session_state[f"debate_consensus_{final_symbol}"] = whitepaper
+                        st.rerun()
+
+            # =====================================================================
+            # SUB-TAB 3：專家自由漫聊室 (不限特定股票，尬聊任意主題)
+            # =====================================================================
+            with sub_tab3:
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #3b82f633;
+                     border-radius: 16px; padding: 20px 24px; margin-bottom: 20px;">
+                  <h3 style="color: #60a5fa; margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px;">☕ 專家自由漫聊室</h3>
+                  <p style="color: #94a3b8; margin: 0; font-size: 0.9rem;">
+                    在這裡，您可以與三位配置好的投資專家進行任意主題的深度對話！<br>
+                    <b>不限特定股票</b>，無論是宏觀經濟體制、資產配置、科技革命風口、個人理財規劃，甚至是市場反射性理論與人生投資心法，專家們都會秉持各自獨特的思想流派，與您展開精彩探討與交鋒。
+                  </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # --- 1. 初始化 Session State ---
+                if "free_chat_history" not in st.session_state:
+                    st.session_state["free_chat_history"] = []
+                if "free_selected_speakers" not in st.session_state:
+                    st.session_state["free_selected_speakers"] = [True, False, False]
+                if "free_query_input_val" not in st.session_state:
+                    st.session_state["free_query_input_val"] = ""
+
+                # --- 2. 渲染對話紀錄 ---
+                free_chat_container = st.container()
+                with free_chat_container:
+                    if not st.session_state["free_chat_history"]:
+                        st.info("💡 自由漫聊室目前空空如也。在下方輸入任何您感興趣的主題，並勾選專家來開啟對話吧！")
+                    else:
+                        for msg in st.session_state["free_chat_history"]:
+                            if msg["role"] == "user":
+                                with st.chat_message("user", avatar="👤"):
+                                    st.markdown(f"**您**：{msg['content']}")
+                            else:
+                                exp_idx = 0
+                                for idx, cfg in enumerate(st.session_state["expert_configs"]):
+                                    if cfg["name"] == msg["name"]:
+                                        exp_idx = idx
+                                        break
+                                avatar_emoji = ["🎩", "👑", "🦅"][exp_idx % 3]
+                                with st.chat_message("assistant", avatar=avatar_emoji):
+                                    st.markdown(f"### {avatar_emoji} {msg['name']} ({msg['model']})")
+                                    st.markdown(msg["content"])
+
+                # --- 3. 對話輸入與控制區 ---
+                st.markdown("---")
+                expert_options = [cfg["name"] for cfg in st.session_state["expert_configs"]]
+
+                st.write("🗣️ **指定發言專家（可複選）**：")
+                free_col_e1, free_col_e2, free_col_e3 = st.columns(3)
+                with free_col_e1:
+                    free_e1 = st.checkbox(f"🎩 {expert_options[0]}", value=st.session_state["free_selected_speakers"][0], key="free_cb_exp_0")
+                with free_col_e2:
+                    free_e2 = st.checkbox(f"👑 {expert_options[1]}", value=st.session_state["free_selected_speakers"][1], key="free_cb_exp_1")
+                with free_col_e3:
+                    free_e3 = st.checkbox(f"🦅 {expert_options[2]}", value=st.session_state["free_selected_speakers"][2], key="free_cb_exp_2")
+
+                st.session_state["free_selected_speakers"] = [free_e1, free_e2, free_e3]
+                free_active_experts = [st.session_state["expert_configs"][i] for i, sel in enumerate(st.session_state["free_selected_speakers"]) if sel]
+
+                # 快速話題推薦
+                st.write("💡 **推薦熱門話題**（點選後自動帶入輸入框）：")
+                free_qs = [
+                    "2026年全球高通膨與降息循環下，我們該如何配置防禦型與成長型資產？",
+                    "AI革命（如LLM、自動駕駛）正顛覆傳統產業，對未來的就業與商業模式有何衝擊？",
+                    "如何培養自己對市場的「反思性」與直覺？如何辨識市場何時進入非理性繁榮？"
+                ]
+                free_q_cols = st.columns(3)
+                for col_i, q_text in enumerate(free_qs):
+                    label = q_text[:15] + "..." if len(q_text) > 15 else q_text
+                    if col_i == 0: label = "🛡️ " + label
+                    elif col_i == 1: label = "🤖 " + label
+                    else: label = "👁️ " + label
+                    with free_q_cols[col_i]:
+                        if st.button(label, key=f"free_rec_btn_{col_i}", use_container_width=True):
+                            st.session_state["free_query_input_val"] = q_text
+                            st.session_state["free_user_question_input"] = q_text
+                            st.rerun()
+
+                # 輸入框與送出按鈕
+                free_user_question = st.text_input("輸入您的主題：", value=st.session_state.get("free_query_input_val", ""), placeholder="請輸入任何想討論的主題，如『請教如何規劃個人資產配置』...", key="free_user_question_input")
+
+                free_btn_col1, free_btn_col2, _ = st.columns([1, 1, 3])
+                free_submit_clicked = free_btn_col1.button("📤 發送主題進行會診", use_container_width=True, key="free_submit_btn")
+                free_clear_clicked = free_btn_col2.button("🗑️ 清空漫聊紀錄", use_container_width=True, key="free_clear_btn")
+
+                if free_clear_clicked:
+                    st.session_state["free_chat_history"] = []
+                    st.session_state.pop("free_query_input_val", None)
+                    st.rerun()
+
+                if free_submit_clicked and free_user_question.strip():
+                    if not free_active_experts:
+                        st.warning("⚠️ 請至少勾選一位發言專家！")
+                    else:
+                        st.session_state["free_chat_history"].append({
+                            "role": "user", "name": "User",
+                            "content": free_user_question.strip(), "model": "User"
+                        })
+                        for active_cfg in free_active_experts:
+                            expert_name = active_cfg["name"]
+                            system_instruction = f"""
+                            你現在是投資大師「{expert_name}」。你目前正在參與一場自由漫聊會診，這場會診不限特定股票標的，大家正在探討更廣泛的主題。
+                            
+                            你的性格與分析流派為：
+                            - 巴菲特價值專員：非常注重基本面、本益比、護城河與安全邊際，語氣沉穩保守，講究長期價值與規避風險。
+                            - 凱薩琳科技女皇：極度熱愛破壞性創新、AI與未來大趨勢，語氣樂觀犀利，能承受高波動，熱衷尋找下一個引領未來的超級企業。
+                            - 索羅斯總經獵手：著重於全球資金流向、反射性理論、技術分析背離、量價結構與投機反轉點，語氣冷靜且投機，關注宏觀經濟與市場非理性帶來的交易機會。
+                            
+                            【任務說明】：
+                            1. 請嚴格根據上述的流派人設，對使用者或前面專家提出的問題給出分析。
+                            2. 討論串中可能包含其他專家的發言。你**絕對必須**看清前面的討論，並針對前面的論點進行有理有據的贊同、反駁或補充！
+                            3. 請用精煉且有說服力的繁體中文回答，語氣要活生生像個獨立的專家。回答時緊扣使用者提出的宏觀、趨勢、理財、哲學或其他主題，不需要強行套用特定股票的最新數據。
+                            """
+                            expert_avatar = {"巴菲特價值專員": "🎩", "凱薩琳科技女皇": "👑", "索羅斯總經獵手": "🦅"}.get(expert_name, "🤖")
+                            with st.chat_message("assistant", avatar=expert_avatar):
+                                st.markdown(f"**{expert_name}** *({active_cfg['model']})*")
+                                ai_response = st.write_stream(
+                                    stream_expert_chat(
+                                        provider=active_cfg["provider"],
+                                        model_name=active_cfg["model"],
+                                        system_prompt=system_instruction,
+                                        history=st.session_state["free_chat_history"],
+                                        symbol="",
+                                        news_brief=""
+                                    )
+                                )
+                            st.session_state["free_chat_history"].append({
+                                "role": "assistant", "name": expert_name,
+                                "content": ai_response, "model": active_cfg["model"]
+                            })
+                        st.session_state["free_query_input_val"] = ""
+                        st.session_state.pop("free_user_question_input", None)
                         st.rerun()
